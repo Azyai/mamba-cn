@@ -3,3 +3,4 @@ runs/
 predict/
 mamba_ssm.egg-info/
 dataset/
+.trae/
