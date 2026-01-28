@@ -159,7 +159,11 @@ def main() -> None:
             megatron_ckpt = (root / megatron_ckpt).resolve()
         convert_nvidia_mamba2_8b_megatron_checkpoint(checkpoint_path=megatron_ckpt, output_dir=converted_dir, overwrite=False)
 
-    backbone_dtype = amp_dtype if amp_dtype is not None else None
+    backbone_dtype = None
+    if args.bf16:
+        backbone_dtype = torch.bfloat16
+    elif args.fp16:
+        backbone_dtype = torch.float16
     backbone, load_info = Mamba2Backbone.load_pretrained(converted_dir, device=device, dtype=backbone_dtype, strict=False)
     backbone = backbone.to(device)
     backbone.freeze_()
@@ -405,4 +409,3 @@ def main() -> None:
 
 if __name__ == \"__main__\":
     main()
-
