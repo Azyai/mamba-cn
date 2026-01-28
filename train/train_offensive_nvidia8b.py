@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, Dataset
 from mamba_ssm.models.mamba2_backbone import Mamba2Backbone
 from mamba_ssm.models.nvidia_megatron_convert import convert_nvidia_mamba2_8b_megatron_checkpoint
 from mamba_ssm.models.offensive_classifier import MLPHead, masked_mean_pool
-from train.sentencepiece_tokenizer import SentencePieceTokenizer, SentencePieceTokenizerConfig
+from sentencepiece_tokenizer import SentencePieceTokenizer, SentencePieceTokenizerConfig
 
 
 def set_seed(seed: int) -> None:
@@ -104,11 +104,13 @@ def main() -> None:
 
     set_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not torch.cuda.is_available():
+        raise RuntimeError("NVIDIA Mamba2-8B 训练需要 CUDA GPU（本机未检测到 CUDA）。")
+    device = torch.device("cuda")
     amp_dtype = None
-    if device.type == "cuda" and args.bf16:
+    if args.bf16:
         amp_dtype = torch.bfloat16
-    elif device.type == "cuda" and args.fp16:
+    elif args.fp16:
         amp_dtype = torch.float16
 
     root = Path(__file__).resolve().parents[1]
@@ -404,8 +406,8 @@ def main() -> None:
         }
         torch.save(full_ckpt, save_dir / "full_model.pt")
 
-    print(f\"done. best_f1={best_f1:.4f}. saved at: {save_dir}\")
+    print(f"done. best_f1={best_f1:.4f}. saved at: {save_dir}")
 
 
-if __name__ == \"__main__\":
+if __name__ == "__main__":
     main()

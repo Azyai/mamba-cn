@@ -45,7 +45,9 @@ def _infer_ssm_cfg(megatron_model: Dict[str, torch.Tensor], d_model: int) -> Dic
     nheads = int(dt_bias.numel())
     d_conv = int(conv1d_weight.shape[-1])
     d_inner = int(out_proj_weight.shape[1])
-    expand = float(d_inner) / float(d_model)
+    if d_model <= 0 or d_inner % d_model != 0:
+        raise RuntimeError(f"无法推断 expand（d_inner={d_inner}, d_model={d_model}）")
+    expand = int(d_inner // d_model)
     headdim = d_inner // max(nheads, 1)
 
     channels = int(conv1d_weight.shape[0])
@@ -145,4 +147,3 @@ def convert_nvidia_mamba2_8b_megatron_checkpoint(
 
     save_file(state_dict, str(weights_path))
     return output_dir
-
