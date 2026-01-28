@@ -111,7 +111,7 @@ def _build_fallback_tokenizer(texts: List[str], vocab_size: int):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pretrained_dir", type=str, required=True)
+    parser.add_argument("--pretrained_dir", type=str, default="predict/mamba2-2.8b")
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
     parser.add_argument("--dev_csv", type=str, default="")

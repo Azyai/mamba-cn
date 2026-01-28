@@ -15,7 +15,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from mamba_ssm.models.mamba2_backbone import Mamba2Backbone
-from mamba_ssm.models.nvidia_megatron_convert import convert_nvidia_mamba2_8b_megatron_checkpoint
 from mamba_ssm.models.offensive_classifier import MLPHead, masked_mean_pool
 from sentencepiece_tokenizer import SentencePieceTokenizer, SentencePieceTokenizerConfig
 
@@ -70,10 +69,13 @@ def compute_binary_metrics(pred: torch.Tensor, gold: torch.Tensor) -> Dict[str, 
     return compute_binary_metrics_from_counts(tp, tn, fp, fn)
 
 
+def normalize_path_arg(value: str) -> str:
+    return value.replace("\\", "/")
+
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pretrained_dir", type=str, default="predict/mamba2-8b-3t-4k")
-    parser.add_argument("--megatron_ckpt", type=str, default="predict/mamba2-8b-3t-4k/release/mp_rank_00/model_optim_rng.pt")
     parser.add_argument("--converted_dir", type=str, default="predict/mamba2-8b-3t-4k_converted")
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
@@ -81,7 +83,7 @@ def main() -> None:
     parser.add_argument(
         "--tokenizer_model_path",
         type=str,
-        default="predict/mamba2-8b-3t-4k/mt_nlg_plus_multilingual_ja_zh_the_stack_frac_015_256k.model",
+        default="predict/mamba2-8b-3t-4k_converted/mt_nlg_plus_multilingual_ja_zh_the_stack_frac_015_256k.model",
     )
     parser.add_argument("--tokenizer_add_bos", action="store_true")
     parser.add_argument("--tokenizer_no_eos", action="store_true")
@@ -121,6 +123,9 @@ def main() -> None:
     train_items = read_cold_csv(train_path)
     dev_items = read_cold_csv(dev_path)
 
+    args.converted_dir = normalize_path_arg(args.converted_dir)
+    args.tokenizer_model_path = normalize_path_arg(args.tokenizer_model_path)
+
     tok_cfg = SentencePieceTokenizerConfig(
         model_file=str((root / args.tokenizer_model_path).resolve()) if not Path(args.tokenizer_model_path).is_absolute() else args.tokenizer_model_path,
         add_bos=bool(args.tokenizer_add_bos),
@@ -156,10 +161,10 @@ def main() -> None:
     config_path = converted_dir / "config.json"
     weights_path = converted_dir / "model.safetensors"
     if not (config_path.exists() and weights_path.exists()):
-        megatron_ckpt = Path(args.megatron_ckpt)
-        if not megatron_ckpt.is_absolute():
-            megatron_ckpt = (root / megatron_ckpt).resolve()
-        convert_nvidia_mamba2_8b_megatron_checkpoint(checkpoint_path=megatron_ckpt, output_dir=converted_dir, overwrite=False)
+        raise FileNotFoundError(
+            f"未在 {converted_dir} 找到已转换好的权重文件：config.json / model.safetensors。"
+            "请先将预训练 Megatron checkpoint 转换为 safetensors，再运行本训练脚本。"
+        )
 
     backbone_dtype = None
     if args.bf16:
