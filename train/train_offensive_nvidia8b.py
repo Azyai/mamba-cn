@@ -58,10 +58,24 @@ def split_train_dev(items: List[Tuple[str, int]], dev_ratio: float, seed: int) -
     if dev_ratio >= 1:
         return [], items
     rng = random.Random(seed)
-    indices = list(range(len(items)))
-    rng.shuffle(indices)
-    dev_n = int(len(items) * dev_ratio)
-    dev_idx = set(indices[:dev_n])
+    pos_idx = [i for i, (_, y) in enumerate(items) if int(y) == 1]
+    neg_idx = [i for i, (_, y) in enumerate(items) if int(y) == 0]
+    rng.shuffle(pos_idx)
+    rng.shuffle(neg_idx)
+
+    total_dev_n = int(len(items) * dev_ratio)
+    dev_pos_n = int(len(pos_idx) * dev_ratio)
+    dev_neg_n = int(len(neg_idx) * dev_ratio)
+    dev_n = dev_pos_n + dev_neg_n
+    if dev_n < total_dev_n:
+        remaining = total_dev_n - dev_n
+        tail = pos_idx[dev_pos_n:] + neg_idx[dev_neg_n:]
+        rng.shuffle(tail)
+        extra = tail[:remaining]
+        dev_idx = set(pos_idx[:dev_pos_n] + neg_idx[:dev_neg_n] + extra)
+    else:
+        dev_idx = set(pos_idx[:dev_pos_n] + neg_idx[:dev_neg_n])
+
     train_items = [x for i, x in enumerate(items) if i not in dev_idx]
     dev_items = [x for i, x in enumerate(items) if i in dev_idx]
     return train_items, dev_items
@@ -147,6 +161,7 @@ def main() -> None:
     parser.add_argument("--datasets", type=str, default="")
     parser.add_argument("--toxicn_csv", type=str, default="dataset/ToxiCN/ToxiCN_1.0.csv")
     parser.add_argument("--toxicn_dev_ratio", type=float, default=0.1)
+    parser.add_argument("--balance_datasets", action="store_true")
     parser.add_argument("--max_train_items", type=int, default=0)
     parser.add_argument("--max_dev_items", type=int, default=0)
     parser.add_argument(
@@ -264,14 +279,31 @@ def main() -> None:
     (save_dir / "load_info.json").write_text(json.dumps(load_info, ensure_ascii=False, indent=2), encoding="utf-8")
     (save_dir / "backbone_converted_dir.txt").write_text(str(converted_dir), encoding="utf-8")
 
-    train_items_all: List[Tuple[str, int]] = []
+    train_items_by_dataset: Dict[str, List[Tuple[str, int]]] = {}
     dev_items_by_dataset: Dict[str, List[Tuple[str, int]]] = {}
     for ds_name in datasets_arg:
         ds_train, ds_dev = load_dataset(ds_name)
-        train_items_all.extend(ds_train)
+        train_items_by_dataset[ds_name] = ds_train
         dev_items_by_dataset[ds_name] = ds_dev
 
     rng = random.Random(args.seed)
+    if args.balance_datasets and train_items_by_dataset:
+        max_len = max((len(v) for v in train_items_by_dataset.values()), default=0)
+        balanced: List[Tuple[str, int]] = []
+        for ds_name in datasets_arg:
+            items = list(train_items_by_dataset.get(ds_name, []))
+            if not items:
+                continue
+            if len(items) < max_len:
+                need = max_len - len(items)
+                items.extend(rng.choices(items, k=need))
+            balanced.extend(items)
+        train_items_all = balanced
+    else:
+        train_items_all: List[Tuple[str, int]] = []
+        for ds_name in datasets_arg:
+            train_items_all.extend(train_items_by_dataset.get(ds_name, []))
+
     rng.shuffle(train_items_all)
     if args.max_train_items and args.max_train_items > 0:
         train_items_all = train_items_all[: args.max_train_items]
