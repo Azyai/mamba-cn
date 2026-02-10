@@ -96,6 +96,7 @@ class Mamba2Backbone(nn.Module):
         super().__init__()
         self.config = config
         factory_kwargs = {"device": device, "dtype": dtype}
+        self.gradient_checkpointing = False
 
         vocab_padded = config.padded_vocab_size()
         self.embedding = nn.Embedding(vocab_padded, config.d_model, **factory_kwargs)
@@ -127,11 +128,26 @@ class Mamba2Backbone(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         x = self.embedding(input_ids)
-        for layer in self.layers:
-            x = layer(x)
+        if self.training and bool(self.gradient_checkpointing):
+            x = x.detach()
+            x.requires_grad_(True)
+            from torch.utils.checkpoint import checkpoint  # type: ignore
+
+            for layer in self.layers:
+                try:
+                    x = checkpoint(layer, x, use_reentrant=False)
+                except TypeError:
+                    x = checkpoint(layer, x)
+        else:
+            for layer in self.layers:
+                x = layer(x)
         if self.norm_f is not None:
             x = self.norm_f(x)
         return {"last_hidden_state": x, "attention_mask": attention_mask}
+
+    def enable_gradient_checkpointing_(self) -> "Mamba2Backbone":
+        self.gradient_checkpointing = True
+        return self
 
     @staticmethod
     def load_pretrained(

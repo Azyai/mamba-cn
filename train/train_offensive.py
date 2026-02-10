@@ -14,6 +14,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
+from mamba_ssm.models.lora import LoRAConfig, inject_lora, lora_state_dict
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -166,6 +168,14 @@ def main() -> None:
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--lora_enable", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lora_target", type=str, default="in_proj")
+    parser.add_argument("--lora_r", type=int, default=8)
+    parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--lora_train_head", type=int, default=1)
+    parser.add_argument("--gradient_checkpointing", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--disable_mem_eff_path", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
     args = parser.parse_args()
 
@@ -251,7 +261,26 @@ def main() -> None:
 
     head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
     model = FrozenBackboneClassifier(backbone=backbone, head=head).to(device)
-    model.freeze_backbone_()
+    lora_cfg = None
+    lora_replaced: List[str] = []
+    lora_targets = tuple(x.strip() for x in str(args.lora_target).split(",") if x.strip())
+    if args.lora_enable:
+        lora_cfg = LoRAConfig(r=int(args.lora_r), alpha=int(args.lora_alpha), dropout=float(args.lora_dropout), target=lora_targets or ("in_proj",))
+        lora_replaced = inject_lora(backbone, lora_cfg)
+        if args.gradient_checkpointing:
+            backbone.enable_gradient_checkpointing_()
+        need_disable_mem_eff = bool(args.disable_mem_eff_path) or ("out_proj" in lora_cfg.target)
+        if need_disable_mem_eff:
+            for layer in backbone.layers:
+                mixer = getattr(layer, "mixer", None)
+                if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
+                    mixer.use_mem_eff_path = False
+    else:
+        model.freeze_backbone_()
+
+    if args.lora_enable and int(args.lora_train_head) <= 0:
+        for p in model.head.parameters():
+            p.requires_grad = False
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
@@ -465,7 +494,14 @@ def main() -> None:
                     "tokenizer_name_or_path": args.tokenizer_name_or_path,
                     "max_length": args.max_length,
                 }
+                if lora_cfg is not None:
+                    ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
+                    ckpt["lora_cfg"] = json.loads(lora_cfg.to_json())
+                    ckpt["lora_replaced"] = list(lora_replaced)
                 torch.save(ckpt, save_dir / "best_head.pt")
+                if lora_cfg is not None:
+                    (save_dir / "lora_config.json").write_text(lora_cfg.to_json(), encoding="utf-8")
+                    torch.save({k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}, save_dir / "lora_adapter.pt")
     finally:
         csv_f.close()
 
