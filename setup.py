@@ -28,10 +28,12 @@ setup(
         "torch",
         "triton",
         "einops",
+        "numpy",
         "packaging",
         "huggingface_hub",
     ],
     extras_require={
         "causal-conv1d": ["causal-conv1d>=1.2.0"],
+        "train": ["safetensors", "sentencepiece", "transformers", "tqdm"],
     },
 )

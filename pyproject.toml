@@ -19,6 +19,7 @@ dependencies = [
     "torch",
     "triton",
     "einops",
+    "numpy",
     "packaging",
     "huggingface_hub",
 ]
@@ -31,6 +32,7 @@ causal-conv1d = [
 ]
 train = [
     "safetensors",
+    "sentencepiece",
     "transformers",
     "tqdm",
 ]
