@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from mamba_ssm.models.mamba2_backbone import Mamba2Backbone
 from mamba_ssm.models.offensive_classifier import MLPHead, masked_mean_pool
+from mamba_ssm.models.lora import LoRAConfig, inject_lora, lora_state_dict
 from sentencepiece_tokenizer import SentencePieceTokenizer, SentencePieceTokenizerConfig
 
 
@@ -185,6 +186,14 @@ def main() -> None:
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--csv_every", type=int, default=100)
     parser.add_argument("--save_full_model", action="store_true")
+    parser.add_argument("--lora_enable", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lora_target", type=str, default="in_proj")
+    parser.add_argument("--lora_r", type=int, default=8)
+    parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--lora_train_head", type=int, default=1)
+    parser.add_argument("--gradient_checkpointing", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--disable_mem_eff_path", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head_nvidia8b")
     args = parser.parse_args()
 
@@ -247,6 +256,21 @@ def main() -> None:
     backbone = backbone.to(device)
     backbone.freeze_()
     backbone.eval()
+
+    lora_cfg = None
+    lora_replaced: List[str] = []
+    lora_targets = tuple(x.strip() for x in str(args.lora_target).split(",") if x.strip())
+    if args.lora_enable:
+        lora_cfg = LoRAConfig(r=int(args.lora_r), alpha=int(args.lora_alpha), dropout=float(args.lora_dropout), target=lora_targets or ("in_proj",))
+        lora_replaced = inject_lora(backbone, lora_cfg)
+        if args.gradient_checkpointing:
+            backbone.enable_gradient_checkpointing_()
+        need_disable_mem_eff = bool(args.disable_mem_eff_path) or ("out_proj" in lora_cfg.target)
+        if need_disable_mem_eff:
+            for layer in backbone.layers:
+                mixer = getattr(layer, "mixer", None)
+                if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
+                    mixer.use_mem_eff_path = False
 
     def load_dataset(ds_name: str) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
         if ds_name in {"cold", "coldataset", "col"}:
@@ -319,7 +343,11 @@ def main() -> None:
         dev_loaders[ds_name] = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
 
     head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
-    trainable_params = [p for p in head.parameters() if p.requires_grad]
+    if args.lora_enable and int(args.lora_train_head) <= 0:
+        for p in head.parameters():
+            p.requires_grad = False
+
+    trainable_params = [p for p in list(backbone.parameters()) + list(head.parameters()) if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
 
     desired_csv_fields = [
@@ -364,6 +392,11 @@ def main() -> None:
     global_step = 0
 
     def forward_logits(input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
+        if args.lora_enable:
+            outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
+            last_hidden_state = outputs["last_hidden_state"]
+            pooled = masked_mean_pool(last_hidden_state, outputs.get("attention_mask", attention_mask))
+            return head(pooled)
         with torch.no_grad():
             outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
             last_hidden_state = outputs["last_hidden_state"]
@@ -373,6 +406,10 @@ def main() -> None:
 
     try:
         for epoch in range(1, args.epochs + 1):
+            if args.lora_enable:
+                backbone.train()
+            else:
+                backbone.eval()
             head.train()
             optimizer.zero_grad(set_to_none=True)
             step = 0
@@ -500,6 +537,7 @@ def main() -> None:
                     csv_window_steps = 0
 
             head.eval()
+            backbone.eval()
             eval_metrics: Dict[str, Dict[str, float]] = {}
             eval_f1s: List[float] = []
             with torch.no_grad():
@@ -550,10 +588,17 @@ def main() -> None:
                     "tokenizer_model_path": str(Path(tok_cfg.model_file)),
                     "max_length": args.max_length,
                 }
+                if lora_cfg is not None:
+                    ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
+                    ckpt["lora_cfg"] = json.loads(lora_cfg.to_json())
+                    ckpt["lora_replaced"] = list(lora_replaced)
                 torch.save(ckpt, save_dir / "best_head.pt")
                 (save_dir / "best_metrics.json").write_text(
                     json.dumps(best_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+                if lora_cfg is not None:
+                    (save_dir / "lora_config.json").write_text(lora_cfg.to_json(), encoding="utf-8")
+                    torch.save({k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}, save_dir / "lora_adapter.pt")
 
             parts = [f"{k}:{float(eval_metrics[k]['f1']):.4f}" for k in eval_metrics]
             print(f"[eval] epoch {epoch}/{args.epochs} avg_f1 {avg_f1:.4f} " + " ".join(parts))
