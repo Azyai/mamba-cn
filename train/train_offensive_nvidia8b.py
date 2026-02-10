@@ -97,6 +97,42 @@ def compute_binary_metrics(pred: torch.Tensor, gold: torch.Tensor) -> Dict[str, 
     return compute_binary_metrics_from_counts(tp, tn, fp, fn)
 
 
+def compute_binary_counts(pred: torch.Tensor, gold: torch.Tensor) -> Tuple[int, int, int, int]:
+    pred = pred.to(torch.int64)
+    gold = gold.to(torch.int64)
+    tp = int(((pred == 1) & (gold == 1)).sum().item())
+    tn = int(((pred == 0) & (gold == 0)).sum().item())
+    fp = int(((pred == 1) & (gold == 0)).sum().item())
+    fn = int(((pred == 0) & (gold == 1)).sum().item())
+    return tp, tn, fp, fn
+
+
+def compute_ccdc_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, object]:
+    toxic_prec = tp / max(tp + fp, 1)
+    toxic_rec = tp / max(tp + fn, 1)
+    toxic_f1 = 0.0 if (toxic_prec + toxic_rec) == 0 else 2 * toxic_prec * toxic_rec / (toxic_prec + toxic_rec)
+
+    non_toxic_prec = tn / max(tn + fn, 1)
+    non_toxic_rec = tn / max(tn + fp, 1)
+    non_toxic_f1 = (
+        0.0
+        if (non_toxic_prec + non_toxic_rec) == 0
+        else 2 * non_toxic_prec * non_toxic_rec / (non_toxic_prec + non_toxic_rec)
+    )
+
+    macro_prec = 0.5 * (toxic_prec + non_toxic_prec)
+    macro_rec = 0.5 * (toxic_rec + non_toxic_rec)
+    macro_f1 = 0.5 * (toxic_f1 + non_toxic_f1)
+    fpr = fp / max(fp + tn, 1)
+
+    return {
+        "macro": {"precision": macro_prec, "recall": macro_rec, "f1": macro_f1},
+        "non_toxic": {"precision": non_toxic_prec, "recall": non_toxic_rec, "f1": non_toxic_f1},
+        "toxic": {"precision": toxic_prec, "recall": toxic_rec, "f1": toxic_f1},
+        "fpr": fpr,
+    }
+
+
 def normalize_path_arg(value: str) -> str:
     return value.replace("\\", "/")
 
@@ -451,9 +487,13 @@ def main() -> None:
                         all_gold.append(labels.detach().cpu())
                     pred_cat = torch.cat(all_pred, dim=0) if all_pred else torch.zeros((0,), dtype=torch.int64)
                     gold_cat = torch.cat(all_gold, dim=0) if all_gold else torch.zeros((0,), dtype=torch.int64)
-                    m = compute_binary_metrics(pred_cat, gold_cat)
-                    m["size"] = float(len(dev_items_by_dataset.get(ds_name, [])))
-                    eval_metrics[ds_name] = {k: float(v) for k, v in m.items()}
+                    tp, tn, fp, fn = compute_binary_counts(pred_cat, gold_cat)
+                    m = compute_binary_metrics_from_counts(tp, tn, fp, fn)
+                    ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
+                    m_out: Dict[str, object] = {k: float(v) for k, v in m.items()}
+                    m_out["size"] = float(len(dev_items_by_dataset.get(ds_name, [])))
+                    m_out["ccdc"] = ccdc
+                    eval_metrics[ds_name] = m_out
                     eval_f1s.append(float(m["f1"]))
 
             avg_f1 = sum(eval_f1s) / max(len(eval_f1s), 1)
@@ -483,7 +523,7 @@ def main() -> None:
                     json.dumps(best_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
 
-            parts = [f"{k}:{eval_metrics[k]['f1']:.4f}" for k in eval_metrics]
+            parts = [f"{k}:{float(eval_metrics[k]['f1']):.4f}" for k in eval_metrics]
             print(f"[eval] epoch {epoch}/{args.epochs} avg_f1 {avg_f1:.4f} " + " ".join(parts))
     finally:
         csv_f.close()
