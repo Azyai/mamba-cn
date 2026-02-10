@@ -39,6 +39,34 @@ def read_cold_csv(path: Path) -> List[Tuple[str, int]]:
     return items
 
 
+def read_toxicn_csv(path: Path) -> List[Tuple[str, int]]:
+    items: List[Tuple[str, int]] = []
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            text = row.get("content") or row.get("TEXT") or row.get("text")
+            label = row.get("toxic") or row.get("label") or row.get("LABEL")
+            if text is None or label is None:
+                continue
+            items.append((text, int(label)))
+    return items
+
+
+def split_train_dev(items: List[Tuple[str, int]], dev_ratio: float, seed: int) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+    if dev_ratio <= 0:
+        return items, []
+    if dev_ratio >= 1:
+        return [], items
+    rng = random.Random(seed)
+    indices = list(range(len(items)))
+    rng.shuffle(indices)
+    dev_n = int(len(items) * dev_ratio)
+    dev_idx = set(indices[:dev_n])
+    train_items = [x for i, x in enumerate(items) if i not in dev_idx]
+    dev_items = [x for i, x in enumerate(items) if i in dev_idx]
+    return train_items, dev_items
+
+
 class TextLabelDataset(Dataset):
     def __init__(self, items: List[Tuple[str, int]]):
         self.items = items
@@ -80,6 +108,11 @@ def main() -> None:
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
     parser.add_argument("--dev_csv", type=str, default="")
+    parser.add_argument("--datasets", type=str, default="")
+    parser.add_argument("--toxicn_csv", type=str, default="dataset/ToxiCN/ToxiCN_1.0.csv")
+    parser.add_argument("--toxicn_dev_ratio", type=float, default=0.1)
+    parser.add_argument("--max_train_items", type=int, default=0)
+    parser.add_argument("--max_dev_items", type=int, default=0)
     parser.add_argument(
         "--tokenizer_model_path",
         type=str,
@@ -116,15 +149,12 @@ def main() -> None:
         amp_dtype = torch.float16
 
     root = Path(__file__).resolve().parents[1]
-    dataset_dir = (root / args.dataset_dir).resolve()
-    train_path = Path(args.train_csv) if args.train_csv else dataset_dir / "train.csv"
-    dev_path = Path(args.dev_csv) if args.dev_csv else dataset_dir / "dev.csv"
-
-    train_items = read_cold_csv(train_path)
-    dev_items = read_cold_csv(dev_path)
-
     args.converted_dir = normalize_path_arg(args.converted_dir)
     args.tokenizer_model_path = normalize_path_arg(args.tokenizer_model_path)
+    args.dataset_dir = normalize_path_arg(args.dataset_dir)
+    args.train_csv = normalize_path_arg(args.train_csv)
+    args.dev_csv = normalize_path_arg(args.dev_csv)
+    args.toxicn_csv = normalize_path_arg(args.toxicn_csv)
 
     tok_cfg = SentencePieceTokenizerConfig(
         model_file=str((root / args.tokenizer_model_path).resolve()) if not Path(args.tokenizer_model_path).is_absolute() else args.tokenizer_model_path,
@@ -132,9 +162,6 @@ def main() -> None:
         add_eos=not bool(args.tokenizer_no_eos),
     )
     tokenizer = SentencePieceTokenizer(tok_cfg)
-
-    train_ds = TextLabelDataset(train_items)
-    dev_ds = TextLabelDataset(dev_items)
 
     def collate(batch: List[Dict[str, object]]) -> Dict[str, torch.Tensor]:
         texts = [x["text"] for x in batch]
@@ -148,12 +175,6 @@ def main() -> None:
         )
         enc["labels"] = labels
         return enc
-
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate)
-    dev_loader = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
-
-    save_dir = (root / args.save_dir).resolve()
-    save_dir.mkdir(parents=True, exist_ok=True)
 
     converted_dir = Path(args.converted_dir)
     if not converted_dir.is_absolute():
@@ -176,8 +197,58 @@ def main() -> None:
     backbone.freeze_()
     backbone.eval()
 
+    def load_dataset(ds_name: str) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+        if ds_name in {"cold", "coldataset", "col"}:
+            dataset_dir = (root / "dataset/COLDataset").resolve()
+            train_items = read_cold_csv(dataset_dir / "train.csv")
+            dev_items = read_cold_csv(dataset_dir / "dev.csv")
+            return train_items, dev_items
+        if ds_name in {"toxicn", "toxi_cn"}:
+            toxicn_path = Path(args.toxicn_csv)
+            if not toxicn_path.is_absolute():
+                toxicn_path = (root / toxicn_path).resolve()
+            all_items = read_toxicn_csv(toxicn_path)
+            return split_train_dev(all_items, dev_ratio=args.toxicn_dev_ratio, seed=args.seed)
+
+        dataset_dir = (root / args.dataset_dir).resolve()
+        train_path = Path(args.train_csv) if args.train_csv else dataset_dir / "train.csv"
+        dev_path = Path(args.dev_csv) if args.dev_csv else dataset_dir / "dev.csv"
+        if not train_path.is_absolute():
+            train_path = (root / train_path).resolve()
+        if not dev_path.is_absolute():
+            dev_path = (root / dev_path).resolve()
+        return read_cold_csv(train_path), read_cold_csv(dev_path)
+
+    datasets_arg = [x.strip() for x in args.datasets.split(",") if x.strip()]
+    if not datasets_arg:
+        datasets_arg = ["custom"]
+
+    save_dir = (root / args.save_dir).resolve()
+    save_dir.mkdir(parents=True, exist_ok=True)
     (save_dir / "load_info.json").write_text(json.dumps(load_info, ensure_ascii=False, indent=2), encoding="utf-8")
     (save_dir / "backbone_converted_dir.txt").write_text(str(converted_dir), encoding="utf-8")
+
+    train_items_all: List[Tuple[str, int]] = []
+    dev_items_by_dataset: Dict[str, List[Tuple[str, int]]] = {}
+    for ds_name in datasets_arg:
+        ds_train, ds_dev = load_dataset(ds_name)
+        train_items_all.extend(ds_train)
+        dev_items_by_dataset[ds_name] = ds_dev
+
+    rng = random.Random(args.seed)
+    rng.shuffle(train_items_all)
+    if args.max_train_items and args.max_train_items > 0:
+        train_items_all = train_items_all[: args.max_train_items]
+    for ds_name in list(dev_items_by_dataset.keys()):
+        if args.max_dev_items and args.max_dev_items > 0:
+            dev_items_by_dataset[ds_name] = dev_items_by_dataset[ds_name][: args.max_dev_items]
+
+    train_ds = TextLabelDataset(train_items_all)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate)
+    dev_loaders: Dict[str, DataLoader] = {}
+    for ds_name, ds_dev in dev_items_by_dataset.items():
+        dev_ds = TextLabelDataset(ds_dev)
+        dev_loaders[ds_name] = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
 
     head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
     trainable_params = [p for p in head.parameters() if p.requires_grad]
@@ -218,10 +289,11 @@ def main() -> None:
         csv_writer.writeheader()
         csv_f.flush()
 
-    best_f1 = -1.0
+    best_avg_f1 = -1.0
+    best_head_state = None
+    best_metrics: Dict[str, object] = {}
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda" and amp_dtype == torch.float16))
     global_step = 0
-    best_head_state = None
 
     def forward_logits(input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
         with torch.no_grad():
@@ -311,6 +383,7 @@ def main() -> None:
                     opt_step = step // max(args.grad_accum, 1)
                     lr = optimizer.param_groups[0]["lr"] if optimizer.param_groups else args.lr
                     print(
+                        f"[train] "
                         f"epoch {epoch}/{args.epochs} "
                         f"step {step}/{len(train_loader)} "
                         f"global_step {global_step} "
@@ -359,33 +432,45 @@ def main() -> None:
                     csv_window_steps = 0
 
             head.eval()
-            all_pred: List[torch.Tensor] = []
-            all_gold: List[torch.Tensor] = []
+            eval_metrics: Dict[str, Dict[str, float]] = {}
+            eval_f1s: List[float] = []
             with torch.no_grad():
-                for batch in dev_loader:
-                    input_ids = batch["input_ids"].to(device)
-                    attention_mask = batch.get("attention_mask", None)
-                    if attention_mask is not None:
-                        attention_mask = attention_mask.to(device)
-                    labels = batch["labels"].to(device)
-                    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                        logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
-                        pred = logits.argmax(dim=-1)
-                    all_pred.append(pred.detach().cpu())
-                    all_gold.append(labels.detach().cpu())
+                for ds_name, dev_loader in dev_loaders.items():
+                    all_pred: List[torch.Tensor] = []
+                    all_gold: List[torch.Tensor] = []
+                    for batch in dev_loader:
+                        input_ids = batch["input_ids"].to(device)
+                        attention_mask = batch.get("attention_mask", None)
+                        if attention_mask is not None:
+                            attention_mask = attention_mask.to(device)
+                        labels = batch["labels"].to(device)
+                        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
+                            logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
+                            pred = logits.argmax(dim=-1)
+                        all_pred.append(pred.detach().cpu())
+                        all_gold.append(labels.detach().cpu())
+                    pred_cat = torch.cat(all_pred, dim=0) if all_pred else torch.zeros((0,), dtype=torch.int64)
+                    gold_cat = torch.cat(all_gold, dim=0) if all_gold else torch.zeros((0,), dtype=torch.int64)
+                    m = compute_binary_metrics(pred_cat, gold_cat)
+                    m["size"] = float(len(dev_items_by_dataset.get(ds_name, [])))
+                    eval_metrics[ds_name] = {k: float(v) for k, v in m.items()}
+                    eval_f1s.append(float(m["f1"]))
 
-            pred_cat = torch.cat(all_pred, dim=0)
-            gold_cat = torch.cat(all_gold, dim=0)
-            metrics = compute_binary_metrics(pred_cat, gold_cat)
-            metrics["epoch"] = epoch
-            metrics["train_loss"] = total_loss / max(len(train_loader), 1)
-
+            avg_f1 = sum(eval_f1s) / max(len(eval_f1s), 1)
+            epoch_metrics: Dict[str, object] = {
+                "epoch": float(epoch),
+                "train_loss": float(total_loss / max(len(train_loader), 1)),
+                "train_size": float(len(train_items_all)),
+                "eval": eval_metrics,
+                "avg_f1": float(avg_f1),
+            }
             (save_dir / f"metrics_epoch_{epoch}.json").write_text(
-                json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(epoch_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            if metrics["f1"] > best_f1:
-                best_f1 = float(metrics["f1"])
+            if float(avg_f1) > best_avg_f1:
+                best_avg_f1 = float(avg_f1)
+                best_metrics = dict(epoch_metrics)
                 best_head_state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
                 ckpt = {
                     "head": best_head_state,
@@ -394,6 +479,12 @@ def main() -> None:
                     "max_length": args.max_length,
                 }
                 torch.save(ckpt, save_dir / "best_head.pt")
+                (save_dir / "best_metrics.json").write_text(
+                    json.dumps(best_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+
+            parts = [f"{k}:{eval_metrics[k]['f1']:.4f}" for k in eval_metrics]
+            print(f"[eval] epoch {epoch}/{args.epochs} avg_f1 {avg_f1:.4f} " + " ".join(parts))
     finally:
         csv_f.close()
 
@@ -411,7 +502,10 @@ def main() -> None:
         }
         torch.save(full_ckpt, save_dir / "full_model.pt")
 
-    print(f"done. best_f1={best_f1:.4f}. saved at: {save_dir}")
+    (save_dir / "benchmark_summary.json").write_text(
+        json.dumps({"datasets": datasets_arg, "best": best_metrics}, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"done. best_avg_f1={best_avg_f1:.4f}. saved at: {save_dir}")
 
 
 if __name__ == "__main__":
