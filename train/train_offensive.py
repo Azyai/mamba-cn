@@ -99,6 +99,25 @@ def compute_ccdc_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict
     }
 
 
+def flatten_ccdc_metrics(ccdc: Dict[str, object]) -> Dict[str, float]:
+    macro = ccdc.get("macro", {}) if isinstance(ccdc.get("macro", {}), dict) else {}
+    non_toxic = ccdc.get("non_toxic", {}) if isinstance(ccdc.get("non_toxic", {}), dict) else {}
+    toxic = ccdc.get("toxic", {}) if isinstance(ccdc.get("toxic", {}), dict) else {}
+    fpr = float(ccdc.get("fpr", 0.0))
+    return {
+        "macro_precision": float(macro.get("precision", 0.0)),
+        "macro_recall": float(macro.get("recall", 0.0)),
+        "macro_f1": float(macro.get("f1", 0.0)),
+        "non_toxic_precision": float(non_toxic.get("precision", 0.0)),
+        "non_toxic_recall": float(non_toxic.get("recall", 0.0)),
+        "non_toxic_f1": float(non_toxic.get("f1", 0.0)),
+        "toxic_precision": float(toxic.get("precision", 0.0)),
+        "toxic_recall": float(toxic.get("recall", 0.0)),
+        "toxic_f1": float(toxic.get("f1", 0.0)),
+        "fpr": fpr,
+    }
+
+
 def compute_binary_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, float]:
     acc = (tp + tn) / max(tp + tn + fp + fn, 1)
     prec = tp / max(tp + fp, 1)
@@ -301,6 +320,16 @@ def main() -> None:
         "precision",
         "recall",
         "f1",
+        "macro_precision",
+        "macro_recall",
+        "macro_f1",
+        "non_toxic_precision",
+        "non_toxic_recall",
+        "non_toxic_f1",
+        "toxic_precision",
+        "toxic_recall",
+        "toxic_f1",
+        "fpr",
         "lr",
     ]
 
@@ -312,10 +341,10 @@ def main() -> None:
                 first_line = f.readline().strip()
             existing_fields = [x.strip() for x in first_line.split(",") if x.strip()]
             if existing_fields != desired_csv_fields:
-                csv_path = save_dir / "train_steps_v2.csv"
+                csv_path = save_dir / "train_steps_v3.csv"
                 csv_file_exists = csv_path.exists() and csv_path.stat().st_size > 0
         except Exception:
-            csv_path = save_dir / "train_steps_v2.csv"
+            csv_path = save_dir / "train_steps_v3.csv"
             csv_file_exists = csv_path.exists() and csv_path.stat().st_size > 0
 
     csv_f = csv_path.open("a", encoding="utf-8", newline="")
@@ -431,6 +460,8 @@ def main() -> None:
                 if args.csv_every > 0 and csv_window_steps >= args.csv_every:
                     avg_loss = csv_loss_sum / max(csv_window_steps, 1)
                     m = compute_binary_metrics_from_counts(csv_tp, csv_tn, csv_fp, csv_fn)
+                    ccdc = compute_ccdc_metrics_from_counts(csv_tp, csv_tn, csv_fp, csv_fn)
+                    ccdc_flat = flatten_ccdc_metrics(ccdc)
                     opt_step = step // max(args.grad_accum, 1)
                     lr = optimizer.param_groups[0]["lr"] if optimizer.param_groups else args.lr
                     csv_writer.writerow(
@@ -446,6 +477,16 @@ def main() -> None:
                             "precision": f"{m['precision']:.6f}",
                             "recall": f"{m['recall']:.6f}",
                             "f1": f"{m['f1']:.6f}",
+                            "macro_precision": f"{ccdc_flat['macro_precision']:.6f}",
+                            "macro_recall": f"{ccdc_flat['macro_recall']:.6f}",
+                            "macro_f1": f"{ccdc_flat['macro_f1']:.6f}",
+                            "non_toxic_precision": f"{ccdc_flat['non_toxic_precision']:.6f}",
+                            "non_toxic_recall": f"{ccdc_flat['non_toxic_recall']:.6f}",
+                            "non_toxic_f1": f"{ccdc_flat['non_toxic_f1']:.6f}",
+                            "toxic_precision": f"{ccdc_flat['toxic_precision']:.6f}",
+                            "toxic_recall": f"{ccdc_flat['toxic_recall']:.6f}",
+                            "toxic_f1": f"{ccdc_flat['toxic_f1']:.6f}",
+                            "fpr": f"{ccdc_flat['fpr']:.6f}",
                             "lr": f"{lr:.12g}",
                         }
                     )
@@ -477,7 +518,9 @@ def main() -> None:
             gold_cat = torch.cat(all_gold, dim=0)
             tp, tn, fp, fn = compute_binary_counts(pred_cat, gold_cat)
             metrics = compute_binary_metrics_from_counts(tp, tn, fp, fn)
-            metrics["ccdc"] = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
+            ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
+            metrics["ccdc"] = ccdc
+            metrics.update(flatten_ccdc_metrics(ccdc))
             metrics["epoch"] = epoch
             metrics["train_loss"] = total_loss / max(len(train_loader), 1)
 
