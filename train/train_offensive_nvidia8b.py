@@ -167,6 +167,66 @@ def flatten_ccdc_metrics(ccdc: Dict[str, object]) -> Dict[str, float]:
     }
 
 
+def focal_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    class_weight: torch.Tensor | None,
+    alpha_non_toxic: float,
+    alpha_toxic: float,
+    gamma: float,
+) -> torch.Tensor:
+    labels = labels.to(torch.int64)
+    logp = F.log_softmax(logits, dim=-1)
+    logp_y = logp.gather(1, labels.view(-1, 1)).squeeze(1)
+    ce = -logp_y
+
+    if class_weight is not None:
+        w = class_weight.gather(0, labels)
+        ce = ce * w
+
+    alpha = torch.where(labels == 0, torch.tensor(alpha_non_toxic, device=logits.device), torch.tensor(alpha_toxic, device=logits.device))
+    pt = torch.exp(logp_y)
+    loss = alpha * ((1.0 - pt) ** float(gamma)) * ce
+    return loss.mean()
+
+
+def search_best_threshold(
+    *,
+    probs: torch.Tensor,
+    gold: torch.Tensor,
+    thr_min: float,
+    thr_max: float,
+    thr_step: float,
+    fpr_max: float,
+) -> Dict[str, object]:
+    probs = probs.to(torch.float32).view(-1)
+    gold = gold.to(torch.int64).view(-1)
+    best = {"score": -1e9, "threshold": 0.5, "tp": 0, "tn": 0, "fp": 0, "fn": 0}
+
+    t = float(thr_min)
+    while t <= float(thr_max) + 1e-12:
+        pred = (probs >= t).to(torch.int64)
+        tp = int(((pred == 1) & (gold == 1)).sum().item())
+        tn = int(((pred == 0) & (gold == 0)).sum().item())
+        fp = int(((pred == 1) & (gold == 0)).sum().item())
+        fn = int(((pred == 0) & (gold == 1)).sum().item())
+        ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
+        flat = flatten_ccdc_metrics(ccdc)
+        if float(flat["fpr"]) <= float(fpr_max) + 1e-12:
+            score = float(flat["macro_f1"])
+            if score > float(best["score"]):
+                best = {"score": score, "threshold": float(t), "tp": tp, "tn": tn, "fp": fp, "fn": fn}
+        t += float(thr_step)
+
+    tp, tn, fp, fn = int(best["tp"]), int(best["tn"]), int(best["fp"]), int(best["fn"])
+    m = compute_binary_metrics_from_counts(tp, tn, fp, fn)
+    ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
+    out: Dict[str, object] = {"threshold": float(best["threshold"]), "score": float(best["score"]), "metrics": m, "ccdc": ccdc}
+    out.update({k: float(v) for k, v in flatten_ccdc_metrics(ccdc).items()})
+    return out
+
+
 def normalize_path_arg(value: str) -> str:
     return value.replace("\\", "/")
 
@@ -181,7 +241,8 @@ def main() -> None:
     parser.add_argument("--datasets", type=str, default="")
     parser.add_argument("--toxicn_csv", type=str, default="dataset/ToxiCN/ToxiCN_1.0.csv")
     parser.add_argument("--toxicn_dev_ratio", type=float, default=0.1)
-    parser.add_argument("--balance_datasets", action="store_true")
+    parser.add_argument("--balance_datasets", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--dataset_weights", type=str, default="")
     parser.add_argument("--max_train_items", type=int, default=0)
     parser.add_argument("--max_dev_items", type=int, default=0)
     parser.add_argument(
@@ -195,6 +256,8 @@ def main() -> None:
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--lora_lr", type=float, default=1e-4)
+    parser.add_argument("--head_lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--grad_accum", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -213,6 +276,18 @@ def main() -> None:
     parser.add_argument("--lora_train_head", type=int, default=1)
     parser.add_argument("--gradient_checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--disable_mem_eff_path", action="store_true")
+    parser.add_argument("--class_weight_non_toxic", type=float, default=1.0)
+    parser.add_argument("--class_weight_toxic", type=float, default=1.0)
+    parser.add_argument("--loss", type=str, default="ce")
+    parser.add_argument("--focal_gamma", type=float, default=2.0)
+    parser.add_argument("--focal_alpha_non_toxic", type=float, default=1.0)
+    parser.add_argument("--focal_alpha_toxic", type=float, default=1.0)
+    parser.add_argument("--best_metric", type=str, default="avg_f1")
+    parser.add_argument("--best_fpr_max", type=float, default=1.0)
+    parser.add_argument("--eval_optimize_threshold", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--eval_threshold_min", type=float, default=0.05)
+    parser.add_argument("--eval_threshold_max", type=float, default=0.95)
+    parser.add_argument("--eval_threshold_step", type=float, default=0.01)
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head_nvidia8b")
     args = parser.parse_args()
 
@@ -330,7 +405,40 @@ def main() -> None:
         dev_items_by_dataset[ds_name] = ds_dev
 
     rng = random.Random(args.seed)
-    if args.balance_datasets and train_items_by_dataset:
+    dataset_weights: Dict[str, float] = {}
+    if str(args.dataset_weights).strip():
+        for part in str(args.dataset_weights).split(","):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if not k:
+                continue
+            try:
+                dataset_weights[k] = float(v)
+            except Exception:
+                continue
+
+    if dataset_weights:
+        weighted: List[Tuple[str, int]] = []
+        for ds_name in datasets_arg:
+            items = list(train_items_by_dataset.get(ds_name, []))
+            if not items:
+                continue
+            w = float(dataset_weights.get(ds_name, 1.0))
+            if w <= 0:
+                continue
+            mul = int(w)
+            weighted.extend(items * max(mul, 1))
+            frac = w - float(mul)
+            if frac > 1e-6:
+                extra = int(round(frac * len(items)))
+                if extra > 0:
+                    weighted.extend(rng.choices(items, k=extra))
+        train_items_all = weighted
+    elif args.balance_datasets and train_items_by_dataset:
         max_len = max((len(v) for v in train_items_by_dataset.values()), default=0)
         balanced: List[Tuple[str, int]] = []
         for ds_name in datasets_arg:
@@ -365,9 +473,37 @@ def main() -> None:
     if args.lora_enable and int(args.lora_train_head) <= 0:
         for p in head.parameters():
             p.requires_grad = False
+    lora_params: List[torch.nn.Parameter] = []
+    head_params: List[torch.nn.Parameter] = []
+    other_params: List[torch.nn.Parameter] = []
+    for name, p in backbone.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.endswith(".lora_A") or name.endswith(".lora_B"):
+            lora_params.append(p)
+        else:
+            other_params.append(p)
+    for p in head.parameters():
+        if p.requires_grad:
+            head_params.append(p)
 
-    trainable_params = [p for p in list(backbone.parameters()) + list(head.parameters()) if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
+    param_groups: List[Dict[str, object]] = []
+    if lora_params:
+        param_groups.append({"params": lora_params, "lr": float(args.lora_lr), "weight_decay": 0.0})
+    if head_params:
+        param_groups.append({"params": head_params, "lr": float(args.head_lr), "weight_decay": float(args.weight_decay)})
+    if other_params:
+        param_groups.append({"params": other_params, "lr": float(args.lr), "weight_decay": float(args.weight_decay)})
+
+    optimizer = torch.optim.AdamW(param_groups)
+
+    ce_weight = None
+    if float(args.class_weight_non_toxic) != 1.0 or float(args.class_weight_toxic) != 1.0:
+        ce_weight = torch.tensor([float(args.class_weight_non_toxic), float(args.class_weight_toxic)], device=device, dtype=torch.float32)
+    loss_name = str(args.loss).strip().lower()
+    focal_gamma = float(args.focal_gamma)
+    focal_alpha_non_toxic = float(args.focal_alpha_non_toxic)
+    focal_alpha_toxic = float(args.focal_alpha_toxic)
 
     desired_csv_fields = [
         "time",
@@ -469,7 +605,17 @@ def main() -> None:
 
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
                     logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
-                    loss = F.cross_entropy(logits, labels)
+                    if loss_name == "focal":
+                        loss = focal_loss(
+                            logits,
+                            labels,
+                            class_weight=ce_weight,
+                            alpha_non_toxic=focal_alpha_non_toxic,
+                            alpha_toxic=focal_alpha_toxic,
+                            gamma=focal_gamma,
+                        )
+                    else:
+                        loss = F.cross_entropy(logits, labels, weight=ce_weight)
                     loss = loss / max(args.grad_accum, 1)
 
                 with torch.no_grad():
@@ -585,6 +731,7 @@ def main() -> None:
                 for ds_name, dev_loader in dev_loaders.items():
                     all_pred: List[torch.Tensor] = []
                     all_gold: List[torch.Tensor] = []
+                    all_logits: List[torch.Tensor] = []
                     for batch in dev_loader:
                         input_ids = batch["input_ids"].to(device)
                         attention_mask = batch.get("attention_mask", None)
@@ -596,6 +743,7 @@ def main() -> None:
                             pred = logits.argmax(dim=-1)
                         all_pred.append(pred.detach().cpu())
                         all_gold.append(labels.detach().cpu())
+                        all_logits.append(logits.detach().cpu())
                     pred_cat = torch.cat(all_pred, dim=0) if all_pred else torch.zeros((0,), dtype=torch.int64)
                     gold_cat = torch.cat(all_gold, dim=0) if all_gold else torch.zeros((0,), dtype=torch.int64)
                     tp, tn, fp, fn = compute_binary_counts(pred_cat, gold_cat)
@@ -607,24 +755,79 @@ def main() -> None:
                     m_out["ccdc"] = ccdc
                     for k, v in ccdc_flat.items():
                         m_out[k] = float(v)
+
+                    if bool(args.eval_optimize_threshold) and all_logits:
+                        logits_cat = torch.cat(all_logits, dim=0).to(torch.float32)
+                        probs = torch.softmax(logits_cat, dim=-1)[:, 1]
+                        cal = search_best_threshold(
+                            probs=probs,
+                            gold=gold_cat,
+                            thr_min=float(args.eval_threshold_min),
+                            thr_max=float(args.eval_threshold_max),
+                            thr_step=float(args.eval_threshold_step),
+                            fpr_max=float(args.best_fpr_max),
+                        )
+                        m_out["calibrated"] = {"threshold": cal["threshold"], "score": cal["score"], "metrics": cal["metrics"], "ccdc": cal["ccdc"]}
+                        m_out["calibrated_threshold"] = float(cal["threshold"])
+                        m_out["calibrated_score"] = float(cal["score"])
+                        for k in (
+                            "macro_precision",
+                            "macro_recall",
+                            "macro_f1",
+                            "non_toxic_precision",
+                            "non_toxic_recall",
+                            "non_toxic_f1",
+                            "toxic_precision",
+                            "toxic_recall",
+                            "toxic_f1",
+                            "fpr",
+                        ):
+                            m_out[f"calibrated_{k}"] = float(cal.get(k, 0.0))
                     eval_metrics[ds_name] = m_out
                     eval_f1s.append(float(m["f1"]))
 
             avg_f1 = sum(eval_f1s) / max(len(eval_f1s), 1)
+            macro_f1s = [float(eval_metrics[k].get("macro_f1", 0.0)) for k in eval_metrics]
+            avg_macro_f1 = sum(macro_f1s) / max(len(macro_f1s), 1)
+            toxicn_macro_f1 = float(eval_metrics.get("toxicn", {}).get("macro_f1", 0.0))
+            toxicn_fpr = float(eval_metrics.get("toxicn", {}).get("fpr", 0.0))
+            cal_macro_f1s = [float(eval_metrics[k].get("calibrated_macro_f1", 0.0)) for k in eval_metrics]
+            avg_calibrated_macro_f1 = sum(cal_macro_f1s) / max(len(cal_macro_f1s), 1)
+            toxicn_calibrated_macro_f1 = float(eval_metrics.get("toxicn", {}).get("calibrated_macro_f1", 0.0))
+            toxicn_calibrated_fpr = float(eval_metrics.get("toxicn", {}).get("calibrated_fpr", 0.0))
             epoch_metrics: Dict[str, object] = {
                 "epoch": float(epoch),
                 "train_loss": float(total_loss / max(len(train_loader), 1)),
                 "train_size": float(len(train_items_all)),
                 "eval": eval_metrics,
                 "avg_f1": float(avg_f1),
+                "avg_macro_f1": float(avg_macro_f1),
+                "avg_calibrated_macro_f1": float(avg_calibrated_macro_f1),
             }
             (save_dir / f"metrics_epoch_{epoch}.json").write_text(
                 json.dumps(epoch_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            if float(avg_f1) > best_avg_f1:
-                best_avg_f1 = float(avg_f1)
+            best_metric = str(args.best_metric).strip().lower()
+            score = float(avg_f1)
+            if best_metric == "avg_macro_f1":
+                score = float(avg_macro_f1)
+            elif best_metric == "toxicn_macro_f1":
+                score = float(toxicn_macro_f1)
+            elif best_metric == "toxicn_macro_f1_under_fpr":
+                score = float(toxicn_macro_f1) if toxicn_fpr <= float(args.best_fpr_max) else -1e9
+            elif best_metric == "avg_calibrated_macro_f1":
+                score = float(avg_calibrated_macro_f1)
+            elif best_metric == "toxicn_calibrated_macro_f1":
+                score = float(toxicn_calibrated_macro_f1)
+            elif best_metric == "toxicn_calibrated_macro_f1_under_fpr":
+                score = float(toxicn_calibrated_macro_f1) if toxicn_calibrated_fpr <= float(args.best_fpr_max) else -1e9
+
+            if float(score) > best_avg_f1:
+                best_avg_f1 = float(score)
                 best_metrics = dict(epoch_metrics)
+                best_metrics["best_metric"] = str(args.best_metric)
+                best_metrics["best_score"] = float(score)
                 best_head_state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
                 ckpt = {
                     "head": best_head_state,
