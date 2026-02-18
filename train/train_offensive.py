@@ -266,8 +266,13 @@ def main() -> None:
     parser.add_argument("--eval_threshold_min", type=float, default=0.05)
     parser.add_argument("--eval_threshold_max", type=float, default=0.95)
     parser.add_argument("--eval_threshold_step", type=float, default=0.01)
+    parser.add_argument("--eval_threshold_fpr_max", type=float, default=1.0)
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
     args = parser.parse_args()
+
+    best_metric_lower = str(args.best_metric).strip().lower()
+    if float(args.eval_threshold_fpr_max) == 1.0 and "under_fpr" in best_metric_lower:
+        args.eval_threshold_fpr_max = float(args.best_fpr_max)
 
     set_seed(args.seed)
 
@@ -642,7 +647,7 @@ def main() -> None:
                     thr_min=float(args.eval_threshold_min),
                     thr_max=float(args.eval_threshold_max),
                     thr_step=float(args.eval_threshold_step),
-                    fpr_max=float(args.best_fpr_max),
+                    fpr_max=float(args.eval_threshold_fpr_max),
                 )
                 metrics["calibrated"] = {"threshold": cal["threshold"], "score": cal["score"], "metrics": cal["metrics"], "ccdc": cal["ccdc"]}
                 metrics["calibrated_threshold"] = float(cal["threshold"])

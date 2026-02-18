@@ -40,7 +40,7 @@ def read_cold_csv(path: Path) -> List[Tuple[str, int]]:
     return items
 
 
-def read_toxicn_csv(path: Path) -> List[Tuple[str, int]]:
+def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
     items: List[Tuple[str, int]] = []
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -49,7 +49,35 @@ def read_toxicn_csv(path: Path) -> List[Tuple[str, int]]:
             label = row.get("toxic") or row.get("label") or row.get("LABEL")
             if text is None or label is None:
                 continue
+            if add_metadata:
+                platform = row.get("platform", "")
+                topic = row.get("topic", "")
+                target = row.get("target", "")
+                prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
+                text = prefix + text
             items.append((text, int(label)))
+    return items
+
+
+def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    items: List[Tuple[str, int]] = []
+    if isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            text = row.get("content") or row.get("TEXT") or row.get("text")
+            label = row.get("toxic") if "toxic" in row else row.get("label")
+            if text is None or label is None:
+                continue
+            if add_metadata:
+                platform = row.get("platform", "")
+                topic = row.get("topic", "")
+                target = row.get("target", "")
+                prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
+                text = prefix + str(text)
+            items.append((str(text), int(label)))
     return items
 
 
@@ -199,10 +227,12 @@ def search_best_threshold(
     thr_max: float,
     thr_step: float,
     fpr_max: float,
+    objective: str,
 ) -> Dict[str, object]:
     probs = probs.to(torch.float32).view(-1)
     gold = gold.to(torch.int64).view(-1)
     best = {"score": -1e9, "threshold": 0.5, "tp": 0, "tn": 0, "fp": 0, "fn": 0}
+    objective = str(objective).strip().lower()
 
     t = float(thr_min)
     while t <= float(thr_max) + 1e-12:
@@ -214,7 +244,14 @@ def search_best_threshold(
         ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
         flat = flatten_ccdc_metrics(ccdc)
         if float(flat["fpr"]) <= float(fpr_max) + 1e-12:
-            score = float(flat["macro_f1"])
+            if objective == "acc":
+                score = float(compute_binary_metrics_from_counts(tp, tn, fp, fn)["acc"])
+            elif objective == "toxic_recall":
+                score = float(flat["toxic_recall"])
+            elif objective == "toxic_f1":
+                score = float(flat["toxic_f1"])
+            else:
+                score = float(flat["macro_f1"])
             if score > float(best["score"]):
                 best = {"score": score, "threshold": float(t), "tp": tp, "tn": tn, "fp": fp, "fn": fn}
         t += float(thr_step)
@@ -224,6 +261,7 @@ def search_best_threshold(
     ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
     out: Dict[str, object] = {"threshold": float(best["threshold"]), "score": float(best["score"]), "metrics": m, "ccdc": ccdc}
     out.update({k: float(v) for k, v in flatten_ccdc_metrics(ccdc).items()})
+    out["objective"] = objective
     return out
 
 
@@ -240,7 +278,10 @@ def main() -> None:
     parser.add_argument("--dev_csv", type=str, default="")
     parser.add_argument("--datasets", type=str, default="")
     parser.add_argument("--toxicn_csv", type=str, default="dataset/ToxiCN/ToxiCN_1.0.csv")
+    parser.add_argument("--toxicn_train_json", type=str, default="dataset/ToxiCN/train.json")
+    parser.add_argument("--toxicn_test_json", type=str, default="dataset/ToxiCN/test.json")
     parser.add_argument("--toxicn_dev_ratio", type=float, default=0.1)
+    parser.add_argument("--toxicn_add_metadata", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--balance_datasets", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--dataset_weights", type=str, default="")
     parser.add_argument("--max_train_items", type=int, default=0)
@@ -288,8 +329,15 @@ def main() -> None:
     parser.add_argument("--eval_threshold_min", type=float, default=0.05)
     parser.add_argument("--eval_threshold_max", type=float, default=0.95)
     parser.add_argument("--eval_threshold_step", type=float, default=0.01)
+    parser.add_argument("--eval_threshold_fpr_max", type=float, default=1.0)
+    parser.add_argument("--eval_threshold_objective", type=str, default="macro_f1")
+    parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head_nvidia8b")
     args = parser.parse_args()
+
+    best_metric_lower = str(args.best_metric).strip().lower()
+    if float(args.eval_threshold_fpr_max) == 1.0 and "under_fpr" in best_metric_lower:
+        args.eval_threshold_fpr_max = float(args.best_fpr_max)
 
     set_seed(args.seed)
 
@@ -309,6 +357,8 @@ def main() -> None:
     args.train_csv = normalize_path_arg(args.train_csv)
     args.dev_csv = normalize_path_arg(args.dev_csv)
     args.toxicn_csv = normalize_path_arg(args.toxicn_csv)
+    args.toxicn_train_json = normalize_path_arg(args.toxicn_train_json)
+    args.toxicn_test_json = normalize_path_arg(args.toxicn_test_json)
 
     tok_cfg = SentencePieceTokenizerConfig(
         model_file=str((root / args.tokenizer_model_path).resolve()) if not Path(args.tokenizer_model_path).is_absolute() else args.tokenizer_model_path,
@@ -351,6 +401,18 @@ def main() -> None:
     backbone.freeze_()
     backbone.eval()
 
+    if bool(args.train_norm):
+        for layer in backbone.layers:
+            norm = getattr(layer, "norm", None)
+            if norm is not None:
+                norm.to(dtype=torch.float32)
+                for p in norm.parameters():
+                    p.requires_grad = True
+        if getattr(backbone, "norm_f", None) is not None:
+            backbone.norm_f.to(dtype=torch.float32)
+            for p in backbone.norm_f.parameters():
+                p.requires_grad = True
+
     lora_cfg = None
     lora_replaced: List[str] = []
     lora_targets = tuple(x.strip() for x in str(args.lora_target).split(",") if x.strip())
@@ -373,10 +435,21 @@ def main() -> None:
             dev_items = read_cold_csv(dataset_dir / "dev.csv")
             return train_items, dev_items
         if ds_name in {"toxicn", "toxi_cn"}:
+            train_json = Path(args.toxicn_train_json)
+            test_json = Path(args.toxicn_test_json)
+            if not train_json.is_absolute():
+                train_json = (root / train_json).resolve()
+            if not test_json.is_absolute():
+                test_json = (root / test_json).resolve()
+            if train_json.exists() and test_json.exists():
+                return (
+                    read_toxicn_json(train_json, add_metadata=bool(args.toxicn_add_metadata)),
+                    read_toxicn_json(test_json, add_metadata=bool(args.toxicn_add_metadata)),
+                )
             toxicn_path = Path(args.toxicn_csv)
             if not toxicn_path.is_absolute():
                 toxicn_path = (root / toxicn_path).resolve()
-            all_items = read_toxicn_csv(toxicn_path)
+            all_items = read_toxicn_csv(toxicn_path, add_metadata=bool(args.toxicn_add_metadata))
             return split_train_dev(all_items, dev_ratio=args.toxicn_dev_ratio, seed=args.seed)
 
         dataset_dir = (root / args.dataset_dir).resolve()
@@ -475,12 +548,15 @@ def main() -> None:
             p.requires_grad = False
     lora_params: List[torch.nn.Parameter] = []
     head_params: List[torch.nn.Parameter] = []
+    norm_params: List[torch.nn.Parameter] = []
     other_params: List[torch.nn.Parameter] = []
     for name, p in backbone.named_parameters():
         if not p.requires_grad:
             continue
         if name.endswith(".lora_A") or name.endswith(".lora_B"):
             lora_params.append(p)
+        elif ".norm." in name or name.startswith("norm_f.") or ".norm_f." in name:
+            norm_params.append(p)
         else:
             other_params.append(p)
     for p in head.parameters():
@@ -492,6 +568,8 @@ def main() -> None:
         param_groups.append({"params": lora_params, "lr": float(args.lora_lr), "weight_decay": 0.0})
     if head_params:
         param_groups.append({"params": head_params, "lr": float(args.head_lr), "weight_decay": float(args.weight_decay)})
+    if norm_params:
+        param_groups.append({"params": norm_params, "lr": float(args.head_lr), "weight_decay": 0.0})
     if other_params:
         param_groups.append({"params": other_params, "lr": float(args.lr), "weight_decay": float(args.weight_decay)})
 
@@ -765,9 +843,17 @@ def main() -> None:
                             thr_min=float(args.eval_threshold_min),
                             thr_max=float(args.eval_threshold_max),
                             thr_step=float(args.eval_threshold_step),
-                            fpr_max=float(args.best_fpr_max),
+                            fpr_max=float(args.eval_threshold_fpr_max),
+                            objective=str(args.eval_threshold_objective),
                         )
-                        m_out["calibrated"] = {"threshold": cal["threshold"], "score": cal["score"], "metrics": cal["metrics"], "ccdc": cal["ccdc"]}
+                        m_out["calibrated"] = {
+                            "threshold": cal["threshold"],
+                            "score": cal["score"],
+                            "objective": cal.get("objective", str(args.eval_threshold_objective)),
+                            "fpr_max": float(args.eval_threshold_fpr_max),
+                            "metrics": cal["metrics"],
+                            "ccdc": cal["ccdc"],
+                        }
                         m_out["calibrated_threshold"] = float(cal["threshold"])
                         m_out["calibrated_score"] = float(cal["score"])
                         for k in (
