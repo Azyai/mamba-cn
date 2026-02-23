@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Toxicity Demo</title>
+    <style>
+      :root {
+        --bg: #f5f5f7;
+        --card: rgba(255, 255, 255, 0.78);
+        --card2: rgba(255, 255, 255, 0.92);
+        --text: #1d1d1f;
+        --muted: rgba(29, 29, 31, 0.62);
+        --border: rgba(0, 0, 0, 0.08);
+        --shadow: 0 20px 60px rgba(0, 0, 0, 0.08);
+        --shadow2: 0 10px 30px rgba(0, 0, 0, 0.06);
+        --blue: #007aff;
+        --red: #ff3b30;
+        --green: #34c759;
+      }
+
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+        background: radial-gradient(1200px 600px at 20% 10%, rgba(0, 122, 255, 0.14), rgba(0, 122, 255, 0) 60%),
+                    radial-gradient(1000px 600px at 80% 0%, rgba(52, 199, 89, 0.10), rgba(52, 199, 89, 0) 60%),
+                    var(--bg);
+      }
+
+      .container { max-width: 960px; margin: 0 auto; padding: 28px 18px 60px; }
+      .header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+      h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0; font-weight: 700; }
+      .sub { margin-top: 10px; color: var(--muted); font-size: 13px; }
+      code { background: rgba(0,0,0,0.06); padding: 2px 6px; border-radius: 8px; }
+
+      .card {
+        margin-top: 18px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        overflow: hidden;
+      }
+
+      .card-inner { padding: 16px 16px 14px; background: linear-gradient(to bottom, rgba(255,255,255,0.92), rgba(255,255,255,0.72)); }
+
+      textarea {
+        width: 100%;
+        min-height: 170px;
+        padding: 12px 12px;
+        box-sizing: border-box;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        outline: none;
+        background: var(--card2);
+        color: var(--text);
+        font-size: 14px;
+        line-height: 1.45;
+        resize: vertical;
+      }
+      textarea:focus { border-color: rgba(0,122,255,0.35); box-shadow: 0 0 0 4px rgba(0,122,255,0.12); }
+
+      .row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+      .row > * { margin: 0; }
+
+      label { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+      select, input[type="number"] {
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--card2);
+        padding: 8px 10px;
+        outline: none;
+        color: var(--text);
+      }
+      select:focus, input[type="number"]:focus { border-color: rgba(0,122,255,0.35); box-shadow: 0 0 0 4px rgba(0,122,255,0.12); }
+
+      .btn {
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.86);
+        padding: 9px 12px;
+        cursor: pointer;
+        color: var(--text);
+        box-shadow: var(--shadow2);
+        transition: transform 0.06s ease, background 0.15s ease, opacity 0.15s ease;
+      }
+      .btn:active { transform: scale(0.98); }
+      .btn.primary {
+        background: linear-gradient(180deg, rgba(0,122,255,0.95), rgba(0,122,255,0.82));
+        border-color: rgba(0,122,255,0.35);
+        color: white;
+      }
+      .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+      .meta { margin-top: 12px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .chip { font-size: 12px; color: var(--muted); background: rgba(255,255,255,0.7); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; }
+      .err { color: var(--red); font-weight: 600; }
+
+      table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+      th, td { border-bottom: 1px solid rgba(0,0,0,0.08); padding: 10px 8px; vertical-align: top; }
+      th { color: rgba(29,29,31,0.7); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+      td { font-size: 14px; }
+
+      .tag { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
+      .tag.bad { background: rgba(255,59,48,0.12); color: #b00020; }
+      .tag.good { background: rgba(52,199,89,0.14); color: #1b5e20; }
+
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(245,245,247,0.72);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+      }
+      .overlay-card {
+        width: min(520px, calc(100% - 40px));
+        background: rgba(255,255,255,0.9);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 18px 18px 16px;
+      }
+      .overlay-title { font-size: 16px; font-weight: 700; margin: 0; }
+      .overlay-sub { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+      .spinner {
+        margin-top: 14px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 3px solid rgba(0,0,0,0.08);
+        border-top-color: rgba(0,122,255,0.9);
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div class="overlay" id="overlay">
+      <div class="overlay-card">
+        <div class="overlay-title" id="overlayTitle">加载模型中…</div>
+        <div class="overlay-sub" id="overlaySub">首次加载可能较慢，请稍候。</div>
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="overlay-sub err" id="overlayErr" style="display:none;margin-top:10px;"></div>
+      </div>
+    </div>
+
+    <div class="container">
+      <div class="header">
+        <h1>文本含毒检测</h1>
+        <div class="chip" id="statusChip">状态：初始化</div>
+      </div>
+      <div class="sub">多条文本用 <code>\,</code> 分隔；或使用换行分隔。</div>
+
+      <div class="card">
+        <div class="card-inner">
+          <textarea id="input" placeholder="输入文本。例如：&#10;这是一条正常文本\\, 你这个傻X"></textarea>
+
+          <div class="row">
+            <label>
+              阈值模式
+              <select id="thresholdMode">
+                <option value="calibrated">calibrated（优先使用run里保存的阈值）</option>
+                <option value="fixed">fixed（使用自定义阈值）</option>
+                <option value="argmax">argmax（等价阈值0.5）</option>
+              </select>
+            </label>
+
+            <label>
+              自定义阈值
+              <input id="threshold" type="number" min="0" max="1" step="0.01" value="0.5" />
+            </label>
+
+            <button class="btn primary" id="run">检测</button>
+            <button class="btn" id="clear">清空</button>
+          </div>
+
+          <div class="meta">
+            <div class="chip" id="meta"></div>
+            <div class="chip err" id="err"></div>
+          </div>
+
+          <table id="table" style="display:none;">
+            <thead>
+              <tr>
+                <th style="width:52px;">#</th>
+                <th>文本</th>
+                <th style="width:120px;">p(toxic)</th>
+                <th style="width:110px;">预测</th>
+              </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function splitTexts(raw) {
+        const s = (raw || "").trim();
+        if (!s) return [];
+        if (s.includes("\\,")) {
+          return s.split("\\,").map(x => x.trim()).filter(Boolean);
+        }
+        if (s.includes("\n")) {
+          return s.split(/\n+/).map(x => x.trim()).filter(Boolean);
+        }
+        return s.split(",").map(x => x.trim()).filter(Boolean);
+      }
+
+      function esc(s) {
+        return (s || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+      }
+
+      function setOverlay(show, title, sub, err) {
+        const el = document.getElementById("overlay");
+        const titleEl = document.getElementById("overlayTitle");
+        const subEl = document.getElementById("overlaySub");
+        const errEl = document.getElementById("overlayErr");
+        el.style.display = show ? "flex" : "none";
+        if (title) titleEl.textContent = title;
+        if (sub) subEl.textContent = sub;
+        if (err) {
+          errEl.style.display = "";
+          errEl.textContent = err;
+        } else {
+          errEl.style.display = "none";
+          errEl.textContent = "";
+        }
+      }
+
+      function setReady(ready) {
+        document.getElementById("run").disabled = !ready;
+        document.getElementById("thresholdMode").disabled = !ready;
+        document.getElementById("threshold").disabled = !ready;
+      }
+
+      async function refreshStatus() {
+        const r = await fetch("/api/status", { method: "GET" });
+        const st = await r.json();
+        const chip = document.getElementById("statusChip");
+        if (st.status === "ready") {
+          chip.textContent = "状态：就绪";
+          setReady(true);
+          setOverlay(false);
+          return true;
+        }
+        if (st.status === "error") {
+          chip.textContent = "状态：加载失败";
+          setReady(false);
+          setOverlay(true, "模型加载失败", "请检查 run_dir 与权重路径是否正确。", st.error || "未知错误");
+          return false;
+        }
+        chip.textContent = "状态：加载中";
+        setReady(false);
+        setOverlay(true, "加载模型中…", "首次加载可能较慢，请稍候。", null);
+        return null;
+      }
+
+      async function predict() {
+        const input = document.getElementById("input").value;
+        const texts = splitTexts(input);
+        const thresholdMode = document.getElementById("thresholdMode").value;
+        const threshold = parseFloat(document.getElementById("threshold").value || "0.5");
+
+        document.getElementById("err").textContent = "";
+        document.getElementById("meta").textContent = "";
+        document.getElementById("table").style.display = "none";
+        document.getElementById("tbody").innerHTML = "";
+
+        if (texts.length === 0) {
+          document.getElementById("err").textContent = "请输入至少一条文本。";
+          return;
+        }
+
+        const resp = await fetch("/api/predict", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ texts, threshold_mode: thresholdMode, threshold })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          if (resp.status === 503) {
+            await refreshStatus();
+          }
+          document.getElementById("err").textContent = data && data.error ? data.error : "请求失败";
+          return;
+        }
+
+        document.getElementById("meta").textContent =
+          `n=${data.n} threshold_mode=${data.threshold_mode} threshold=${data.threshold} latency_ms=${data.latency_ms.toFixed(1)}`;
+
+        const rows = data.results || [];
+        const tb = document.getElementById("tbody");
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          const pred = r.label === 1 ? `<span class="tag bad">toxic</span>` : `<span class="tag good">non-toxic</span>`;
+          const tr = document.createElement("tr");
+          tr.innerHTML =
+            `<td>${i + 1}</td>` +
+            `<td>${esc(r.text)}</td>` +
+            `<td>${Number(r.p_toxic).toFixed(6)}</td>` +
+            `<td>${pred}</td>`;
+          tb.appendChild(tr);
+        }
+        document.getElementById("table").style.display = "";
+      }
+
+      document.getElementById("run").addEventListener("click", () => {
+        predict().catch(e => {
+          document.getElementById("err").textContent = e && e.message ? e.message : String(e);
+        });
+      });
+      document.getElementById("clear").addEventListener("click", () => {
+        document.getElementById("input").value = "";
+        document.getElementById("err").textContent = "";
+        document.getElementById("meta").textContent = "";
+        document.getElementById("table").style.display = "none";
+        document.getElementById("tbody").innerHTML = "";
+      });
+
+      (async () => {
+        setOverlay(true, "加载模型中…", "首次加载可能较慢，请稍候。", null);
+        setReady(false);
+        for (;;) {
+          const ok = await refreshStatus().catch(() => null);
+          if (ok === true) break;
+          await new Promise(r => setTimeout(r, 600));
+        }
+      })();
+    </script>
+  </body>
+</html>
