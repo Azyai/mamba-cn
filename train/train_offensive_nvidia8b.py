@@ -369,7 +369,7 @@ def main() -> None:
     parser.add_argument("--focal_gamma", type=float, default=2.0)
     parser.add_argument("--focal_alpha_non_toxic", type=float, default=1.0)
     parser.add_argument("--focal_alpha_toxic", type=float, default=1.0)
-    parser.add_argument("--best_metric", type=str, default="avg_f1")
+    parser.add_argument("--best_metric", type=str, default="avg_sum")
     parser.add_argument("--best_fpr_max", type=float, default=1.0)
     parser.add_argument("--eval_optimize_threshold", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--eval_threshold_min", type=float, default=0.05)
@@ -674,7 +674,7 @@ def main() -> None:
         csv_writer.writeheader()
         csv_f.flush()
 
-    best_avg_f1 = -1.0
+    best_avg_sum = -1.0
     best_head_state = None
     best_metrics: Dict[str, object] = {}
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda" and amp_dtype == torch.float16))
@@ -850,7 +850,6 @@ def main() -> None:
             head.eval()
             backbone.eval()
             eval_metrics: Dict[str, Dict[str, float]] = {}
-            eval_f1s: List[float] = []
             with torch.no_grad():
                 for ds_name, dev_loader in dev_loaders.items():
                     all_pred: List[torch.Tensor] = []
@@ -916,49 +915,59 @@ def main() -> None:
                         ):
                             m_out[f"calibrated_{k}"] = float(cal.get(k, 0.0))
                     eval_metrics[ds_name] = m_out
-                    eval_f1s.append(float(m["f1"]))
 
-            avg_f1 = sum(eval_f1s) / max(len(eval_f1s), 1)
-            macro_f1s = [float(eval_metrics[k].get("macro_f1", 0.0)) for k in eval_metrics]
-            avg_macro_f1 = sum(macro_f1s) / max(len(macro_f1s), 1)
-            toxicn_macro_f1 = float(eval_metrics.get("toxicn", {}).get("macro_f1", 0.0))
-            toxicn_fpr = float(eval_metrics.get("toxicn", {}).get("fpr", 0.0))
-            cal_macro_f1s = [float(eval_metrics[k].get("calibrated_macro_f1", 0.0)) for k in eval_metrics]
-            avg_calibrated_macro_f1 = sum(cal_macro_f1s) / max(len(cal_macro_f1s), 1)
-            toxicn_calibrated_macro_f1 = float(eval_metrics.get("toxicn", {}).get("calibrated_macro_f1", 0.0))
-            toxicn_calibrated_fpr = float(eval_metrics.get("toxicn", {}).get("calibrated_fpr", 0.0))
+            avg_acc = sum(float(eval_metrics[k].get("acc", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            macro_avg_precision = sum(float(eval_metrics[k].get("macro_precision", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            macro_avg_recall = sum(float(eval_metrics[k].get("macro_recall", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            macro_avg_f1 = sum(float(eval_metrics[k].get("macro_f1", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            non_toxic_avg_precision = sum(float(eval_metrics[k].get("non_toxic_precision", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            non_toxic_avg_recall = sum(float(eval_metrics[k].get("non_toxic_recall", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            non_toxic_avg_f1 = sum(float(eval_metrics[k].get("non_toxic_f1", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            toxic_avg_precision = sum(float(eval_metrics[k].get("toxic_precision", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            toxic_avg_recall = sum(float(eval_metrics[k].get("toxic_recall", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            toxic_avg_f1 = sum(float(eval_metrics[k].get("toxic_f1", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            fpr_score_avg = sum(1.0 - float(eval_metrics[k].get("fpr", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            avg_sum = (
+                avg_acc
+                + macro_avg_precision
+                + macro_avg_recall
+                + macro_avg_f1
+                + non_toxic_avg_precision
+                + non_toxic_avg_recall
+                + non_toxic_avg_f1
+                + toxic_avg_precision
+                + toxic_avg_recall
+                + toxic_avg_f1
+                + fpr_score_avg
+            )
             epoch_metrics: Dict[str, object] = {
                 "epoch": float(epoch),
                 "train_loss": float(total_loss / max(len(train_loader), 1)),
                 "train_size": float(len(train_items_all)),
                 "eval": eval_metrics,
-                "avg_f1": float(avg_f1),
-                "avg_macro_f1": float(avg_macro_f1),
-                "avg_calibrated_macro_f1": float(avg_calibrated_macro_f1),
+                "avg_acc": float(avg_acc),
+                "macro_avg_precision": float(macro_avg_precision),
+                "macro_avg_recall": float(macro_avg_recall),
+                "macro_avg_f1": float(macro_avg_f1),
+                "non_toxic_avg_precision": float(non_toxic_avg_precision),
+                "non_toxic_avg_recall": float(non_toxic_avg_recall),
+                "non_toxic_avg_f1": float(non_toxic_avg_f1),
+                "toxic_avg_precision": float(toxic_avg_precision),
+                "toxic_avg_recall": float(toxic_avg_recall),
+                "toxic_avg_f1": float(toxic_avg_f1),
+                "fpr_score_avg": float(fpr_score_avg),
+                "avg_sum": float(avg_sum),
             }
             (save_dir / f"metrics_epoch_{epoch}.json").write_text(
                 json.dumps(compact_epoch_metrics_for_save(epoch_metrics), ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            best_metric = str(args.best_metric).strip().lower()
-            score = float(avg_f1)
-            if best_metric == "avg_macro_f1":
-                score = float(avg_macro_f1)
-            elif best_metric == "toxicn_macro_f1":
-                score = float(toxicn_macro_f1)
-            elif best_metric == "toxicn_macro_f1_under_fpr":
-                score = float(toxicn_macro_f1) if toxicn_fpr <= float(args.best_fpr_max) else -1e9
-            elif best_metric == "avg_calibrated_macro_f1":
-                score = float(avg_calibrated_macro_f1)
-            elif best_metric == "toxicn_calibrated_macro_f1":
-                score = float(toxicn_calibrated_macro_f1)
-            elif best_metric == "toxicn_calibrated_macro_f1_under_fpr":
-                score = float(toxicn_calibrated_macro_f1) if toxicn_calibrated_fpr <= float(args.best_fpr_max) else -1e9
+            score = float(avg_sum)
 
-            if float(score) > best_avg_f1:
-                best_avg_f1 = float(score)
+            if float(score) > best_avg_sum:
+                best_avg_sum = float(score)
                 best_metrics = dict(epoch_metrics)
-                best_metrics["best_metric"] = str(args.best_metric)
+                best_metrics["best_metric"] = "avg_sum"
                 best_metrics["best_score"] = float(score)
                 best_head_state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
                 ckpt = {
@@ -980,7 +989,7 @@ def main() -> None:
                     torch.save({k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}, save_dir / "lora_adapter.pt")
 
             parts = [f"{k}:{float(eval_metrics[k]['f1']):.4f}" for k in eval_metrics]
-            print(f"[eval] epoch {epoch}/{args.epochs} avg_f1 {avg_f1:.4f} " + " ".join(parts))
+            print(f"[eval] epoch {epoch}/{args.epochs} avg_sum {avg_sum:.4f} " + " ".join(parts))
     finally:
         csv_f.close()
 
@@ -1001,7 +1010,7 @@ def main() -> None:
     (save_dir / "benchmark_summary.json").write_text(
         json.dumps({"datasets": datasets_arg, "best": compact_epoch_metrics_for_save(best_metrics)}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(f"done. best_avg_f1={best_avg_f1:.4f}. saved at: {save_dir}")
+    print(f"done. best_avg_sum={best_avg_sum:.4f}. saved at: {save_dir}")
 
 
 if __name__ == "__main__":

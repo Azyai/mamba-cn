@@ -299,7 +299,7 @@ def main() -> None:
     parser.add_argument("--focal_gamma", type=float, default=2.0)
     parser.add_argument("--focal_alpha_non_toxic", type=float, default=1.0)
     parser.add_argument("--focal_alpha_toxic", type=float, default=1.0)
-    parser.add_argument("--best_metric", type=str, default="f1")
+    parser.add_argument("--best_metric", type=str, default="avg_sum")
     parser.add_argument("--best_fpr_max", type=float, default=1.0)
     parser.add_argument("--eval_optimize_threshold", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--eval_threshold_min", type=float, default=0.05)
@@ -497,7 +497,7 @@ def main() -> None:
         csv_writer.writeheader()
         csv_f.flush()
 
-    best_f1 = -1.0
+    best_avg_sum = -1.0
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda" and amp_dtype == torch.float16))
     global_step = 0
     best_head_state = None
@@ -704,6 +704,43 @@ def main() -> None:
                     "fpr",
                 ):
                     metrics[f"calibrated_{k}"] = float(cal.get(k, 0.0))
+            avg_acc = float(metrics.get("acc", 0.0))
+            macro_avg_precision = float(metrics.get("macro_precision", 0.0))
+            macro_avg_recall = float(metrics.get("macro_recall", 0.0))
+            macro_avg_f1 = float(metrics.get("macro_f1", 0.0))
+            non_toxic_avg_precision = float(metrics.get("non_toxic_precision", 0.0))
+            non_toxic_avg_recall = float(metrics.get("non_toxic_recall", 0.0))
+            non_toxic_avg_f1 = float(metrics.get("non_toxic_f1", 0.0))
+            toxic_avg_precision = float(metrics.get("toxic_precision", 0.0))
+            toxic_avg_recall = float(metrics.get("toxic_recall", 0.0))
+            toxic_avg_f1 = float(metrics.get("toxic_f1", 0.0))
+            fpr_score_avg = 1.0 - float(metrics.get("fpr", 0.0))
+            avg_sum = (
+                avg_acc
+                + macro_avg_precision
+                + macro_avg_recall
+                + macro_avg_f1
+                + non_toxic_avg_precision
+                + non_toxic_avg_recall
+                + non_toxic_avg_f1
+                + toxic_avg_precision
+                + toxic_avg_recall
+                + toxic_avg_f1
+                + fpr_score_avg
+            )
+
+            metrics["avg_acc"] = float(avg_acc)
+            metrics["macro_avg_precision"] = float(macro_avg_precision)
+            metrics["macro_avg_recall"] = float(macro_avg_recall)
+            metrics["macro_avg_f1"] = float(macro_avg_f1)
+            metrics["non_toxic_avg_precision"] = float(non_toxic_avg_precision)
+            metrics["non_toxic_avg_recall"] = float(non_toxic_avg_recall)
+            metrics["non_toxic_avg_f1"] = float(non_toxic_avg_f1)
+            metrics["toxic_avg_precision"] = float(toxic_avg_precision)
+            metrics["toxic_avg_recall"] = float(toxic_avg_recall)
+            metrics["toxic_avg_f1"] = float(toxic_avg_f1)
+            metrics["fpr_score_avg"] = float(fpr_score_avg)
+            metrics["avg_sum"] = float(avg_sum)
             metrics["epoch"] = epoch
             metrics["train_loss"] = total_loss / max(len(train_loader), 1)
 
@@ -711,19 +748,10 @@ def main() -> None:
                 json.dumps(compact_metrics_for_save(metrics), ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            best_metric = str(args.best_metric).strip().lower()
-            score = float(metrics.get("f1", 0.0))
-            if best_metric == "macro_f1":
-                score = float(metrics.get("macro_f1", 0.0))
-            elif best_metric == "macro_f1_under_fpr":
-                score = float(metrics.get("macro_f1", 0.0)) if float(metrics.get("fpr", 0.0)) <= float(args.best_fpr_max) else -1e9
-            elif best_metric == "calibrated_macro_f1":
-                score = float(metrics.get("calibrated_macro_f1", 0.0))
-            elif best_metric == "calibrated_macro_f1_under_fpr":
-                score = float(metrics.get("calibrated_macro_f1", 0.0)) if float(metrics.get("calibrated_fpr", 0.0)) <= float(args.best_fpr_max) else -1e9
+            score = float(avg_sum)
 
-            if float(score) > best_f1:
-                best_f1 = float(score)
+            if float(score) > best_avg_sum:
+                best_avg_sum = float(score)
                 best_head_state = {k: v.detach().cpu() for k, v in model.head.state_dict().items()}
                 ckpt = {
                     "head": best_head_state,
@@ -756,7 +784,7 @@ def main() -> None:
         }
         torch.save(full_ckpt, save_dir / "full_model.pt")
 
-    print(f"done. best_f1={best_f1:.4f}. saved at: {save_dir}")
+    print(f"done. best_avg_sum={best_avg_sum:.4f}. saved at: {save_dir}")
 
 
 if __name__ == "__main__":
