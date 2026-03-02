@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import json
 import os
@@ -117,44 +116,6 @@ def flatten_ccdc_metrics(ccdc: Dict[str, object]) -> Dict[str, float]:
         "toxic_f1": float(toxic.get("f1", 0.0)),
         "fpr": fpr,
     }
-
-
-_CCDC_FLAT_KEYS = {
-    "macro_precision",
-    "macro_recall",
-    "macro_f1",
-    "non_toxic_precision",
-    "non_toxic_recall",
-    "non_toxic_f1",
-    "toxic_precision",
-    "toxic_recall",
-    "toxic_f1",
-    "fpr",
-}
-
-_CALIBRATED_FLAT_KEYS = {
-    "calibrated_macro_precision",
-    "calibrated_macro_recall",
-    "calibrated_macro_f1",
-    "calibrated_non_toxic_precision",
-    "calibrated_non_toxic_recall",
-    "calibrated_non_toxic_f1",
-    "calibrated_toxic_precision",
-    "calibrated_toxic_recall",
-    "calibrated_toxic_f1",
-    "calibrated_fpr",
-}
-
-
-def compact_metrics_for_save(metrics: Dict[str, object]) -> Dict[str, object]:
-    out = copy.deepcopy(metrics)
-    if "ccdc" in out:
-        for k in _CCDC_FLAT_KEYS:
-            out.pop(k, None)
-    if "calibrated" in out:
-        for k in _CALIBRATED_FLAT_KEYS:
-            out.pop(k, None)
-    return out
 
 
 def focal_loss(
@@ -708,7 +669,7 @@ def main() -> None:
             metrics["train_loss"] = total_loss / max(len(train_loader), 1)
 
             (save_dir / f"metrics_epoch_{epoch}.json").write_text(
-                json.dumps(compact_metrics_for_save(metrics), ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
             best_metric = str(args.best_metric).strip().lower()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import json
 import os
@@ -194,51 +193,6 @@ def flatten_ccdc_metrics(ccdc: Dict[str, object]) -> Dict[str, float]:
         "toxic_f1": float(toxic.get("f1", 0.0)),
         "fpr": fpr,
     }
-
-
-_CCDC_FLAT_KEYS = {
-    "macro_precision",
-    "macro_recall",
-    "macro_f1",
-    "non_toxic_precision",
-    "non_toxic_recall",
-    "non_toxic_f1",
-    "toxic_precision",
-    "toxic_recall",
-    "toxic_f1",
-    "fpr",
-}
-
-_CALIBRATED_FLAT_KEYS = {
-    "calibrated_macro_precision",
-    "calibrated_macro_recall",
-    "calibrated_macro_f1",
-    "calibrated_non_toxic_precision",
-    "calibrated_non_toxic_recall",
-    "calibrated_non_toxic_f1",
-    "calibrated_toxic_precision",
-    "calibrated_toxic_recall",
-    "calibrated_toxic_f1",
-    "calibrated_fpr",
-}
-
-
-def compact_epoch_metrics_for_save(epoch_metrics: Dict[str, object]) -> Dict[str, object]:
-    out = copy.deepcopy(epoch_metrics)
-    eval_metrics = out.get("eval", None)
-    if isinstance(eval_metrics, dict):
-        for ds_name, metrics in eval_metrics.items():
-            if not isinstance(metrics, dict):
-                continue
-            if "ccdc" in metrics:
-                for k in _CCDC_FLAT_KEYS:
-                    metrics.pop(k, None)
-            if "calibrated" in metrics:
-                for k in _CALIBRATED_FLAT_KEYS:
-                    metrics.pop(k, None)
-            eval_metrics[ds_name] = metrics
-        out["eval"] = eval_metrics
-    return out
 
 
 def focal_loss(
@@ -937,7 +891,7 @@ def main() -> None:
                 "avg_calibrated_macro_f1": float(avg_calibrated_macro_f1),
             }
             (save_dir / f"metrics_epoch_{epoch}.json").write_text(
-                json.dumps(compact_epoch_metrics_for_save(epoch_metrics), ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(epoch_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
             best_metric = str(args.best_metric).strip().lower()
@@ -973,7 +927,7 @@ def main() -> None:
                     ckpt["lora_replaced"] = list(lora_replaced)
                 torch.save(ckpt, save_dir / "best_head.pt")
                 (save_dir / "best_metrics.json").write_text(
-                    json.dumps(compact_epoch_metrics_for_save(best_metrics), ensure_ascii=False, indent=2), encoding="utf-8"
+                    json.dumps(best_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 if lora_cfg is not None:
                     (save_dir / "lora_config.json").write_text(lora_cfg.to_json(), encoding="utf-8")
@@ -999,7 +953,7 @@ def main() -> None:
         torch.save(full_ckpt, save_dir / "full_model.pt")
 
     (save_dir / "benchmark_summary.json").write_text(
-        json.dumps({"datasets": datasets_arg, "best": compact_epoch_metrics_for_save(best_metrics)}, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps({"datasets": datasets_arg, "best": best_metrics}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(f"done. best_avg_f1={best_avg_f1:.4f}. saved at: {save_dir}")
 
