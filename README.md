@@ -47,13 +47,16 @@ assert y.shape == x.shape
 
 ## Offensive Training
 
-This repo includes a minimal offensive-text classifier training script that freezes a Mamba2 backbone and trains a small MLP head.
+This repo includes two training entrypoints for offensive-text classification: a 2.8B base model (frozen backbone + MLP head) and an 8B LoRA finetuning script.
+
+### 2.8B Base (train_offensive.py)
 
 ```bash
+cd /hy-tmp/mamba
 export HF_ENDPOINT=https://hf-mirror.com
 python -m pip install -e ".[train]"
 
-.venv/bin/python train/train_offensive.py \
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive.py \
   --pretrained_dir predict \
   --tokenizer_name_or_path gpt2 \
   --train_csv dataset/COLDataset/train.csv \
@@ -66,32 +69,85 @@ python -m pip install -e ".[train]"
   --save_dir runs/offensive_head
 ```
 
-### NVIDIA Mamba2-8B (Megatron checkpoint) Version
-
-If you downloaded `nvidia/mamba2-8b-3t-4k` in Megatron-LM checkpoint format (e.g. `release/mp_rank_00/model_optim_rng.pt`), use the 8B training entrypoint:
+2.8B 双数据集训练（cold + toxicn，支持 dataset_weights / balance_datasets）：
 
 ```bash
+cd /hy-tmp/mamba
+export HF_ENDPOINT=https://hf-mirror.com
+python -m pip install -e ".[train]"
+
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive.py \
+  --pretrained_dir predict \
+  --tokenizer_name_or_path gpt2 \
+  --datasets cold,toxicn \
+  --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
+  --toxicn_dev_ratio 0.1 \
+  --fp16 \
+  --batch_size 8 \
+  --grad_accum 4 \
+  --max_length 256 \
+  --epochs 3 \
+  --save_dir runs/offensive_head_multi
+```
+
+### NVIDIA Mamba2-8B LoRA (train_offensive_nvidia8b.py)
+
+```bash
+cd /hy-tmp/mamba
 export HF_ENDPOINT=https://hf-mirror.com
 python -m pip install -e ".[train]" sentencepiece
 
-.venv/bin/python train/train_offensive_nvidia8b.py \
-  --megatron_ckpt predict/mamba2-8b-3t-4k/release/mp_rank_00/model_optim_rng.pt \
-  --converted_dir predict/mamba2-8b-3t-4k_converted \
-  --tokenizer_model_path predict/mamba2-8b-3t-4k/mt_nlg_plus_multilingual_ja_zh_the_stack_frac_015_256k.model \
-  --train_csv dataset/COLDataset/train.csv \
-  --dev_csv dataset/COLDataset/dev.csv \
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive_nvidia8b.py \
+  --datasets cold,toxicn \
+  --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
+  --toxicn_dev_ratio 0.1 \
   --fp16 \
-  --batch_size 1 \
-  --grad_accum 8 \
-  --max_length 256 \
-  --epochs 1 \
-  --save_dir runs/offensive_head_nvidia8b
+  --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
+  --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
+  --save_dir runs/lora3_b
 ```
 
-Notes:
+## Prediction and Evaluation
 
-- The script automatically converts the Megatron checkpoint to a local `config.json` + `model.safetensors` folder (default: `predict/mamba2-8b-3t-4k_converted`) before loading it.
-- The backbone forward is forced under `no_grad` and pooled features are detached, so only the head is trained (lower VRAM than full finetuning).
+### Offline eval on dev/test splits
+
+```bash
+cd /hy-tmp/mamba
+python -m pip install -e ".[train]"
+
+# eval run_dir on multiple datasets
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/eval_run.py \
+  --run_dir runs/offensive_head_multi \
+  --datasets cold,toxicn \
+  --split dev \
+  --max_items 0 \
+  --batch_size 8 \
+  --device cuda \
+  --dtype fp16
+```
+
+### Inspect a run directory (checkpoint + metrics summary)
+
+```bash
+cd /hy-tmp/mamba
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/inspect_run.py \
+  --run_dir runs/offensive_head_multi \
+  --dataset_for_threshold toxicn
+```
+
+### Web demo server
+
+```bash
+cd /hy-tmp/mamba
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/web_toxicity_demo/server.py \
+  --run_dir runs/offensive_head_multi \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --device cuda \
+  --dtype fp16
+```
+
+Then open http://127.0.0.1:8000/ in your browser.
 
 Simplified block:
 
