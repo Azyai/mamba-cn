@@ -38,6 +38,76 @@ def read_cold_csv(path: Path) -> List[Tuple[str, int]]:
     return items
 
 
+def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
+    items: List[Tuple[str, int]] = []
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            text = row.get("content") or row.get("TEXT") or row.get("text")
+            label = row.get("toxic") or row.get("label") or row.get("LABEL")
+            if text is None or label is None:
+                continue
+            if add_metadata:
+                platform = row.get("platform", "")
+                topic = row.get("topic", "")
+                target = row.get("target", "")
+                prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
+                text = prefix + text
+            items.append((text, int(label)))
+    return items
+
+
+def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    items: List[Tuple[str, int]] = []
+    if isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            text = row.get("content") or row.get("TEXT") or row.get("text")
+            label = row.get("toxic") if "toxic" in row else row.get("label")
+            if text is None or label is None:
+                continue
+            if add_metadata:
+                platform = row.get("platform", "")
+                topic = row.get("topic", "")
+                target = row.get("target", "")
+                prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
+                text = prefix + str(text)
+            items.append((str(text), int(label)))
+    return items
+
+
+def split_train_dev(items: List[Tuple[str, int]], dev_ratio: float, seed: int) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+    if dev_ratio <= 0:
+        return items, []
+    if dev_ratio >= 1:
+        return [], items
+    rng = random.Random(seed)
+    pos_idx = [i for i, (_, y) in enumerate(items) if int(y) == 1]
+    neg_idx = [i for i, (_, y) in enumerate(items) if int(y) == 0]
+    rng.shuffle(pos_idx)
+    rng.shuffle(neg_idx)
+
+    total_dev_n = int(len(items) * dev_ratio)
+    dev_pos_n = int(len(pos_idx) * dev_ratio)
+    dev_neg_n = int(len(neg_idx) * dev_ratio)
+    dev_n = dev_pos_n + dev_neg_n
+    if dev_n < total_dev_n:
+        remaining = total_dev_n - dev_n
+        tail = pos_idx[dev_pos_n:] + neg_idx[dev_neg_n:]
+        rng.shuffle(tail)
+        extra = tail[:remaining]
+        dev_idx = set(pos_idx[:dev_pos_n] + neg_idx[:dev_neg_n] + extra)
+    else:
+        dev_idx = set(pos_idx[:dev_pos_n] + neg_idx[:dev_neg_n])
+
+    train_items = [x for i, x in enumerate(items) if i not in dev_idx]
+    dev_items = [x for i, x in enumerate(items) if i in dev_idx]
+    return train_items, dev_items
+
+
 class TextLabelDataset(Dataset):
     def __init__(self, items: List[Tuple[str, int]]):
         self.items = items
@@ -146,14 +216,21 @@ _CALIBRATED_FLAT_KEYS = {
 }
 
 
-def compact_metrics_for_save(metrics: Dict[str, object]) -> Dict[str, object]:
-    out = copy.deepcopy(metrics)
-    if "ccdc" in out:
-        for k in _CCDC_FLAT_KEYS:
-            out.pop(k, None)
-    if "calibrated" in out:
-        for k in _CALIBRATED_FLAT_KEYS:
-            out.pop(k, None)
+def compact_epoch_metrics_for_save(epoch_metrics: Dict[str, object]) -> Dict[str, object]:
+    out = copy.deepcopy(epoch_metrics)
+    eval_metrics = out.get("eval", None)
+    if isinstance(eval_metrics, dict):
+        for ds_name, metrics in eval_metrics.items():
+            if not isinstance(metrics, dict):
+                continue
+            if "ccdc" in metrics:
+                for k in _CCDC_FLAT_KEYS:
+                    metrics.pop(k, None)
+            if "calibrated" in metrics:
+                for k in _CALIBRATED_FLAT_KEYS:
+                    metrics.pop(k, None)
+            eval_metrics[ds_name] = metrics
+        out["eval"] = eval_metrics
     return out
 
 
@@ -187,10 +264,12 @@ def search_best_threshold(
     thr_max: float,
     thr_step: float,
     fpr_max: float,
+    objective: str,
 ) -> Dict[str, object]:
     probs = probs.to(torch.float32).view(-1)
     gold = gold.to(torch.int64).view(-1)
     best = {"score": -1e9, "threshold": 0.5, "tp": 0, "tn": 0, "fp": 0, "fn": 0}
+    objective = str(objective).strip().lower()
     t = float(thr_min)
     while t <= float(thr_max) + 1e-12:
         pred = (probs >= t).to(torch.int64)
@@ -201,7 +280,14 @@ def search_best_threshold(
         ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
         flat = flatten_ccdc_metrics(ccdc)
         if float(flat["fpr"]) <= float(fpr_max) + 1e-12:
-            score = float(flat["macro_f1"])
+            if objective == "acc":
+                score = float(compute_binary_metrics_from_counts(tp, tn, fp, fn)["acc"])
+            elif objective == "toxic_recall":
+                score = float(flat["toxic_recall"])
+            elif objective == "toxic_f1":
+                score = float(flat["toxic_f1"])
+            else:
+                score = float(flat["macro_f1"])
             if score > float(best["score"]):
                 best = {"score": score, "threshold": float(t), "tp": tp, "tn": tn, "fp": fp, "fn": fn}
         t += float(thr_step)
@@ -211,7 +297,12 @@ def search_best_threshold(
     ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
     out: Dict[str, object] = {"threshold": float(best["threshold"]), "score": float(best["score"]), "metrics": m, "ccdc": ccdc}
     out.update({k: float(v) for k, v in flatten_ccdc_metrics(ccdc).items()})
+    out["objective"] = objective
     return out
+
+
+def normalize_path_arg(value: str) -> str:
+    return value.replace("\\", "/")
 
 
 def compute_binary_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, float]:
@@ -268,6 +359,16 @@ def main() -> None:
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
     parser.add_argument("--dev_csv", type=str, default="")
+    parser.add_argument("--datasets", type=str, default="")
+    parser.add_argument("--toxicn_csv", type=str, default="dataset/ToxiCN/ToxiCN_1.0.csv")
+    parser.add_argument("--toxicn_train_json", type=str, default="dataset/ToxiCN/train.json")
+    parser.add_argument("--toxicn_test_json", type=str, default="dataset/ToxiCN/test.json")
+    parser.add_argument("--toxicn_dev_ratio", type=float, default=0.1)
+    parser.add_argument("--toxicn_add_metadata", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--balance_datasets", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--dataset_weights", type=str, default="")
+    parser.add_argument("--max_train_items", type=int, default=0)
+    parser.add_argument("--max_dev_items", type=int, default=0)
     parser.add_argument("--tokenizer_name_or_path", type=str, required=True)
     parser.add_argument("--tokenizer_cache_dir", type=str, default="predict/gpt2")
     parser.add_argument("--log_every", type=int, default=10)
@@ -306,6 +407,9 @@ def main() -> None:
     parser.add_argument("--eval_threshold_max", type=float, default=0.95)
     parser.add_argument("--eval_threshold_step", type=float, default=0.01)
     parser.add_argument("--eval_threshold_fpr_max", type=float, default=1.0)
+    parser.add_argument("--eval_threshold_objective", type=str, default="macro_f1")
+    parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--save_full_model", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
     args = parser.parse_args()
 
@@ -323,12 +427,13 @@ def main() -> None:
         amp_dtype = torch.float16
 
     root = Path(__file__).resolve().parents[1]
-    dataset_dir = (root / args.dataset_dir).resolve()
-    train_path = Path(args.train_csv) if args.train_csv else dataset_dir / "train.csv"
-    dev_path = Path(args.dev_csv) if args.dev_csv else dataset_dir / "dev.csv"
-
-    train_items = read_cold_csv(train_path)
-    dev_items = read_cold_csv(dev_path)
+    args.pretrained_dir = normalize_path_arg(args.pretrained_dir)
+    args.dataset_dir = normalize_path_arg(args.dataset_dir)
+    args.train_csv = normalize_path_arg(args.train_csv)
+    args.dev_csv = normalize_path_arg(args.dev_csv)
+    args.toxicn_csv = normalize_path_arg(args.toxicn_csv)
+    args.toxicn_train_json = normalize_path_arg(args.toxicn_train_json)
+    args.toxicn_test_json = normalize_path_arg(args.toxicn_test_json)
 
     try:
         from transformers import AutoTokenizer
@@ -341,48 +446,10 @@ def main() -> None:
     tokenizer_cache_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer = None
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.tokenizer_name_or_path, use_fast=True, local_files_only=True, cache_dir=str(tokenizer_cache_dir)
-        )
-    except Exception:
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                args.tokenizer_name_or_path, use_fast=True, cache_dir=str(tokenizer_cache_dir)
-            )
-        except Exception:
-            texts = [t for (t, _) in train_items]
-            inferred_vocab_size = _load_pretrained_vocab_size(args.pretrained_dir)
-            target_vocab_size = 8192
-            if inferred_vocab_size > 0:
-                target_vocab_size = min(target_vocab_size, inferred_vocab_size)
-            tokenizer = _build_fallback_tokenizer(texts, vocab_size=target_vocab_size)
-
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token is not None else tokenizer.unk_token
-
-    train_ds = TextLabelDataset(train_items)
-    dev_ds = TextLabelDataset(dev_items)
-
-    def collate(batch: List[Dict[str, object]]) -> Dict[str, torch.Tensor]:
-        texts = [x["text"] for x in batch]
-        labels = torch.tensor([int(x["label"]) for x in batch], dtype=torch.long)
-        enc = tokenizer(
-            texts,
-            truncation=True,
-            max_length=args.max_length,
-            padding=True,
-            return_tensors="pt",
-        )
-        enc["labels"] = labels
-        return enc
-
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate)
-    dev_loader = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
 
     try:
         from mamba_ssm.models.mamba2_backbone import Mamba2Backbone
-        from mamba_ssm.models.offensive_classifier import FrozenBackboneClassifier, MLPHead
+        from mamba_ssm.models.offensive_classifier import MLPHead, masked_mean_pool
     except ModuleNotFoundError as e:
         raise RuntimeError(
             "未能导入 mamba_ssm（通常是缺少 triton 或 GPU 环境不满足）。"
@@ -392,9 +459,21 @@ def main() -> None:
     backbone, load_info = Mamba2Backbone.load_pretrained(args.pretrained_dir, device=device, dtype=None, strict=False)
     backbone = backbone.to(device)
     backbone.freeze_()
+    backbone.eval()
+
+    if bool(args.train_norm):
+        for layer in backbone.layers:
+            norm = getattr(layer, "norm", None)
+            if norm is not None:
+                norm.to(dtype=torch.float32)
+                for p in norm.parameters():
+                    p.requires_grad = True
+        if getattr(backbone, "norm_f", None) is not None:
+            backbone.norm_f.to(dtype=torch.float32)
+            for p in backbone.norm_f.parameters():
+                p.requires_grad = True
 
     head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
-    model = FrozenBackboneClassifier(backbone=backbone, head=head).to(device)
     lora_cfg = None
     lora_replaced: List[str] = []
     lora_targets = tuple(x.strip() for x in str(args.lora_target).split(",") if x.strip())
@@ -409,24 +488,167 @@ def main() -> None:
                 mixer = getattr(layer, "mixer", None)
                 if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
                     mixer.use_mem_eff_path = False
-    else:
-        model.freeze_backbone_()
 
     if args.lora_enable and int(args.lora_train_head) <= 0:
-        for p in model.head.parameters():
+        for p in head.parameters():
             p.requires_grad = False
+
+    def load_dataset(ds_name: str) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+        if ds_name in {"cold", "coldataset", "col"}:
+            cold_dir = (root / "dataset/COLDataset").resolve()
+            train_items = read_cold_csv(cold_dir / "train.csv")
+            dev_items = read_cold_csv(cold_dir / "dev.csv")
+            return train_items, dev_items
+        if ds_name in {"toxicn", "toxi_cn"}:
+            train_json = Path(args.toxicn_train_json)
+            test_json = Path(args.toxicn_test_json)
+            if not train_json.is_absolute():
+                train_json = (root / train_json).resolve()
+            if not test_json.is_absolute():
+                test_json = (root / test_json).resolve()
+            if train_json.exists() and test_json.exists():
+                return (
+                    read_toxicn_json(train_json, add_metadata=bool(args.toxicn_add_metadata)),
+                    read_toxicn_json(test_json, add_metadata=bool(args.toxicn_add_metadata)),
+                )
+            toxicn_path = Path(args.toxicn_csv)
+            if not toxicn_path.is_absolute():
+                toxicn_path = (root / toxicn_path).resolve()
+            all_items = read_toxicn_csv(toxicn_path, add_metadata=bool(args.toxicn_add_metadata))
+            return split_train_dev(all_items, dev_ratio=args.toxicn_dev_ratio, seed=args.seed)
+
+        dataset_dir = (root / args.dataset_dir).resolve()
+        train_path = Path(args.train_csv) if args.train_csv else dataset_dir / "train.csv"
+        dev_path = Path(args.dev_csv) if args.dev_csv else dataset_dir / "dev.csv"
+        if not train_path.is_absolute():
+            train_path = (root / train_path).resolve()
+        if not dev_path.is_absolute():
+            dev_path = (root / dev_path).resolve()
+        return read_cold_csv(train_path), read_cold_csv(dev_path)
+
+    datasets_arg = [x.strip() for x in args.datasets.split(",") if x.strip()]
+    if not datasets_arg:
+        datasets_arg = ["custom"]
+
+    train_items_by_dataset: Dict[str, List[Tuple[str, int]]] = {}
+    dev_items_by_dataset: Dict[str, List[Tuple[str, int]]] = {}
+    for ds_name in datasets_arg:
+        ds_train, ds_dev = load_dataset(ds_name)
+        train_items_by_dataset[ds_name] = ds_train
+        dev_items_by_dataset[ds_name] = ds_dev
+
+    rng = random.Random(args.seed)
+    dataset_weights: Dict[str, float] = {}
+    if str(args.dataset_weights).strip():
+        for part in str(args.dataset_weights).split(","):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if not k:
+                continue
+            try:
+                dataset_weights[k] = float(v)
+            except Exception:
+                continue
+
+    if dataset_weights:
+        weighted: List[Tuple[str, int]] = []
+        for ds_name in datasets_arg:
+            items = list(train_items_by_dataset.get(ds_name, []))
+            if not items:
+                continue
+            w = float(dataset_weights.get(ds_name, 1.0))
+            if w <= 0:
+                continue
+            mul = int(w)
+            weighted.extend(items * max(mul, 1))
+            frac = w - float(mul)
+            if frac > 1e-6:
+                extra = int(round(frac * len(items)))
+                if extra > 0:
+                    weighted.extend(rng.choices(items, k=extra))
+        train_items_all = weighted
+    elif args.balance_datasets and train_items_by_dataset:
+        max_len = max((len(v) for v in train_items_by_dataset.values()), default=0)
+        balanced: List[Tuple[str, int]] = []
+        for ds_name in datasets_arg:
+            items = list(train_items_by_dataset.get(ds_name, []))
+            if not items:
+                continue
+            if len(items) < max_len:
+                need = max_len - len(items)
+                items.extend(rng.choices(items, k=need))
+            balanced.extend(items)
+        train_items_all = balanced
+    else:
+        train_items_all: List[Tuple[str, int]] = []
+        for ds_name in datasets_arg:
+            train_items_all.extend(train_items_by_dataset.get(ds_name, []))
+
+    rng.shuffle(train_items_all)
+    if args.max_train_items and args.max_train_items > 0:
+        train_items_all = train_items_all[: args.max_train_items]
+    for ds_name in list(dev_items_by_dataset.keys()):
+        if args.max_dev_items and args.max_dev_items > 0:
+            dev_items_by_dataset[ds_name] = dev_items_by_dataset[ds_name][: args.max_dev_items]
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.tokenizer_name_or_path, use_fast=True, local_files_only=True, cache_dir=str(tokenizer_cache_dir)
+        )
+    except Exception:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                args.tokenizer_name_or_path, use_fast=True, cache_dir=str(tokenizer_cache_dir)
+            )
+        except Exception:
+            texts = [t for (t, _) in train_items_all]
+            inferred_vocab_size = _load_pretrained_vocab_size(args.pretrained_dir)
+            target_vocab_size = 8192
+            if inferred_vocab_size > 0:
+                target_vocab_size = min(target_vocab_size, inferred_vocab_size)
+            tokenizer = _build_fallback_tokenizer(texts, vocab_size=target_vocab_size)
+
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token is not None else tokenizer.unk_token
+
+    def collate(batch: List[Dict[str, object]]) -> Dict[str, torch.Tensor]:
+        texts = [x["text"] for x in batch]
+        labels = torch.tensor([int(x["label"]) for x in batch], dtype=torch.long)
+        enc = tokenizer(
+            texts,
+            truncation=True,
+            max_length=args.max_length,
+            padding=True,
+            return_tensors="pt",
+        )
+        enc["labels"] = labels
+        return enc
+
+    train_ds = TextLabelDataset(train_items_all)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate)
+    dev_loaders: Dict[str, DataLoader] = {}
+    for ds_name, ds_dev in dev_items_by_dataset.items():
+        dev_ds = TextLabelDataset(ds_dev)
+        dev_loaders[ds_name] = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
 
     lora_params: List[torch.nn.Parameter] = []
     head_params: List[torch.nn.Parameter] = []
+    norm_params: List[torch.nn.Parameter] = []
     other_params: List[torch.nn.Parameter] = []
     for name, p in backbone.named_parameters():
         if not p.requires_grad:
             continue
         if name.endswith(".lora_A") or name.endswith(".lora_B"):
             lora_params.append(p)
+        elif ".norm." in name or name.startswith("norm_f.") or ".norm_f." in name:
+            norm_params.append(p)
         else:
             other_params.append(p)
-    for p in model.head.parameters():
+    for p in head.parameters():
         if p.requires_grad:
             head_params.append(p)
 
@@ -435,6 +657,8 @@ def main() -> None:
         param_groups.append({"params": lora_params, "lr": float(args.lora_lr), "weight_decay": 0.0})
     if head_params:
         param_groups.append({"params": head_params, "lr": float(args.head_lr), "weight_decay": float(args.weight_decay)})
+    if norm_params:
+        param_groups.append({"params": norm_params, "lr": float(args.head_lr), "weight_decay": 0.0})
     if other_params:
         param_groups.append({"params": other_params, "lr": float(args.lr), "weight_decay": float(args.weight_decay)})
 
@@ -451,6 +675,7 @@ def main() -> None:
     save_dir = (root / args.save_dir).resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
     (save_dir / "load_info.json").write_text(json.dumps(load_info, ensure_ascii=False, indent=2), encoding="utf-8")
+    (save_dir / "backbone_converted_dir.txt").write_text(str(args.pretrained_dir), encoding="utf-8")
 
     desired_csv_fields = [
         "time",
@@ -501,10 +726,28 @@ def main() -> None:
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda" and amp_dtype == torch.float16))
     global_step = 0
     best_head_state = None
+    best_metrics: Dict[str, object] = {}
+
+    def forward_logits(input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
+        if args.lora_enable:
+            outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
+            last_hidden_state = outputs["last_hidden_state"]
+            pooled = masked_mean_pool(last_hidden_state, outputs.get("attention_mask", attention_mask))
+            return head(pooled)
+        with torch.no_grad():
+            outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
+            last_hidden_state = outputs["last_hidden_state"]
+            pooled = masked_mean_pool(last_hidden_state, outputs.get("attention_mask", attention_mask))
+        pooled = pooled.detach()
+        return head(pooled)
 
     try:
         for epoch in range(1, args.epochs + 1):
-            model.train()
+            if args.lora_enable:
+                backbone.train()
+            else:
+                backbone.eval()
+            head.train()
             optimizer.zero_grad(set_to_none=True)
             step = 0
             total_loss = 0.0
@@ -534,10 +777,10 @@ def main() -> None:
                 labels = batch["labels"].to(device)
 
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                    out = model(input_ids=input_ids, attention_mask=attention_mask)
+                    logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
                     if loss_name == "focal":
                         loss = focal_loss(
-                            out.logits,
+                            logits,
                             labels,
                             class_weight=ce_weight,
                             alpha_non_toxic=focal_alpha_non_toxic,
@@ -545,11 +788,11 @@ def main() -> None:
                             gamma=focal_gamma,
                         )
                     else:
-                        loss = F.cross_entropy(out.logits, labels, weight=ce_weight)
+                        loss = F.cross_entropy(logits, labels, weight=ce_weight)
                     loss = loss / max(args.grad_accum, 1)
 
                 with torch.no_grad():
-                    pred = out.logits.argmax(dim=-1)
+                    pred = logits.argmax(dim=-1)
                     pred_pos = pred == 1
                     gold_pos = labels == 1
                     tp = int((pred_pos & gold_pos).sum().item())
@@ -652,69 +895,86 @@ def main() -> None:
                     csv_fn = 0
                     csv_window_steps = 0
 
-            model.eval()
-            all_pred: List[torch.Tensor] = []
-            all_gold: List[torch.Tensor] = []
-            all_logits: List[torch.Tensor] = []
+            head.eval()
+            backbone.eval()
+            eval_metrics: Dict[str, Dict[str, float]] = {}
             with torch.no_grad():
-                for batch in dev_loader:
-                    input_ids = batch["input_ids"].to(device)
-                    attention_mask = batch.get("attention_mask", None)
-                    if attention_mask is not None:
-                        attention_mask = attention_mask.to(device)
-                    labels = batch["labels"].to(device)
-                    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                        out = model(input_ids=input_ids, attention_mask=attention_mask)
-                        pred = out.logits.argmax(dim=-1)
-                    all_pred.append(pred.detach().cpu())
-                    all_gold.append(labels.detach().cpu())
-                    all_logits.append(out.logits.detach().cpu())
+                for ds_name, dev_loader in dev_loaders.items():
+                    all_pred: List[torch.Tensor] = []
+                    all_gold: List[torch.Tensor] = []
+                    all_logits: List[torch.Tensor] = []
+                    for batch in dev_loader:
+                        input_ids = batch["input_ids"].to(device)
+                        attention_mask = batch.get("attention_mask", None)
+                        if attention_mask is not None:
+                            attention_mask = attention_mask.to(device)
+                        labels = batch["labels"].to(device)
+                        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
+                            logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
+                            pred = logits.argmax(dim=-1)
+                        all_pred.append(pred.detach().cpu())
+                        all_gold.append(labels.detach().cpu())
+                        all_logits.append(logits.detach().cpu())
+                    pred_cat = torch.cat(all_pred, dim=0) if all_pred else torch.zeros((0,), dtype=torch.int64)
+                    gold_cat = torch.cat(all_gold, dim=0) if all_gold else torch.zeros((0,), dtype=torch.int64)
+                    tp, tn, fp, fn = compute_binary_counts(pred_cat, gold_cat)
+                    m = compute_binary_metrics_from_counts(tp, tn, fp, fn)
+                    ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
+                    ccdc_flat = flatten_ccdc_metrics(ccdc)
+                    m_out: Dict[str, object] = {k: float(v) for k, v in m.items()}
+                    m_out["size"] = float(len(dev_items_by_dataset.get(ds_name, [])))
+                    m_out["ccdc"] = ccdc
+                    for k, v in ccdc_flat.items():
+                        m_out[k] = float(v)
 
-            pred_cat = torch.cat(all_pred, dim=0)
-            gold_cat = torch.cat(all_gold, dim=0)
-            tp, tn, fp, fn = compute_binary_counts(pred_cat, gold_cat)
-            metrics = compute_binary_metrics_from_counts(tp, tn, fp, fn)
-            ccdc = compute_ccdc_metrics_from_counts(tp, tn, fp, fn)
-            metrics["ccdc"] = ccdc
-            metrics.update(flatten_ccdc_metrics(ccdc))
-            if bool(args.eval_optimize_threshold) and all_logits:
-                logits_cat = torch.cat(all_logits, dim=0).to(torch.float32)
-                probs = torch.softmax(logits_cat, dim=-1)[:, 1]
-                cal = search_best_threshold(
-                    probs=probs,
-                    gold=gold_cat,
-                    thr_min=float(args.eval_threshold_min),
-                    thr_max=float(args.eval_threshold_max),
-                    thr_step=float(args.eval_threshold_step),
-                    fpr_max=float(args.eval_threshold_fpr_max),
-                )
-                metrics["calibrated"] = {"threshold": cal["threshold"], "score": cal["score"], "metrics": cal["metrics"], "ccdc": cal["ccdc"]}
-                metrics["calibrated_threshold"] = float(cal["threshold"])
-                metrics["calibrated_score"] = float(cal["score"])
-                for k in (
-                    "macro_precision",
-                    "macro_recall",
-                    "macro_f1",
-                    "non_toxic_precision",
-                    "non_toxic_recall",
-                    "non_toxic_f1",
-                    "toxic_precision",
-                    "toxic_recall",
-                    "toxic_f1",
-                    "fpr",
-                ):
-                    metrics[f"calibrated_{k}"] = float(cal.get(k, 0.0))
-            avg_acc = float(metrics.get("acc", 0.0))
-            macro_avg_precision = float(metrics.get("macro_precision", 0.0))
-            macro_avg_recall = float(metrics.get("macro_recall", 0.0))
-            macro_avg_f1 = float(metrics.get("macro_f1", 0.0))
-            non_toxic_avg_precision = float(metrics.get("non_toxic_precision", 0.0))
-            non_toxic_avg_recall = float(metrics.get("non_toxic_recall", 0.0))
-            non_toxic_avg_f1 = float(metrics.get("non_toxic_f1", 0.0))
-            toxic_avg_precision = float(metrics.get("toxic_precision", 0.0))
-            toxic_avg_recall = float(metrics.get("toxic_recall", 0.0))
-            toxic_avg_f1 = float(metrics.get("toxic_f1", 0.0))
-            fpr_score_avg = 1.0 - float(metrics.get("fpr", 0.0))
+                    if bool(args.eval_optimize_threshold) and all_logits:
+                        logits_cat = torch.cat(all_logits, dim=0).to(torch.float32)
+                        probs = torch.softmax(logits_cat, dim=-1)[:, 1]
+                        cal = search_best_threshold(
+                            probs=probs,
+                            gold=gold_cat,
+                            thr_min=float(args.eval_threshold_min),
+                            thr_max=float(args.eval_threshold_max),
+                            thr_step=float(args.eval_threshold_step),
+                            fpr_max=float(args.eval_threshold_fpr_max),
+                            objective=str(args.eval_threshold_objective),
+                        )
+                        m_out["calibrated"] = {
+                            "threshold": cal["threshold"],
+                            "score": cal["score"],
+                            "objective": cal.get("objective", str(args.eval_threshold_objective)),
+                            "fpr_max": float(args.eval_threshold_fpr_max),
+                            "metrics": cal["metrics"],
+                            "ccdc": cal["ccdc"],
+                        }
+                        m_out["calibrated_threshold"] = float(cal["threshold"])
+                        m_out["calibrated_score"] = float(cal["score"])
+                        for k in (
+                            "macro_precision",
+                            "macro_recall",
+                            "macro_f1",
+                            "non_toxic_precision",
+                            "non_toxic_recall",
+                            "non_toxic_f1",
+                            "toxic_precision",
+                            "toxic_recall",
+                            "toxic_f1",
+                            "fpr",
+                        ):
+                            m_out[f"calibrated_{k}"] = float(cal.get(k, 0.0))
+                    eval_metrics[ds_name] = m_out
+
+            avg_acc = sum(float(eval_metrics[k].get("acc", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            macro_avg_precision = sum(float(eval_metrics[k].get("macro_precision", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            macro_avg_recall = sum(float(eval_metrics[k].get("macro_recall", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            macro_avg_f1 = sum(float(eval_metrics[k].get("macro_f1", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            non_toxic_avg_precision = sum(float(eval_metrics[k].get("non_toxic_precision", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            non_toxic_avg_recall = sum(float(eval_metrics[k].get("non_toxic_recall", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            non_toxic_avg_f1 = sum(float(eval_metrics[k].get("non_toxic_f1", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            toxic_avg_precision = sum(float(eval_metrics[k].get("toxic_precision", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            toxic_avg_recall = sum(float(eval_metrics[k].get("toxic_recall", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            toxic_avg_f1 = sum(float(eval_metrics[k].get("toxic_f1", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
+            fpr_score_avg = sum(1.0 - float(eval_metrics[k].get("fpr", 0.0)) for k in eval_metrics) / max(len(eval_metrics), 1)
             avg_sum = (
                 avg_acc
                 + macro_avg_precision
@@ -729,30 +989,37 @@ def main() -> None:
                 + fpr_score_avg
             )
 
-            metrics["avg_acc"] = float(avg_acc)
-            metrics["macro_avg_precision"] = float(macro_avg_precision)
-            metrics["macro_avg_recall"] = float(macro_avg_recall)
-            metrics["macro_avg_f1"] = float(macro_avg_f1)
-            metrics["non_toxic_avg_precision"] = float(non_toxic_avg_precision)
-            metrics["non_toxic_avg_recall"] = float(non_toxic_avg_recall)
-            metrics["non_toxic_avg_f1"] = float(non_toxic_avg_f1)
-            metrics["toxic_avg_precision"] = float(toxic_avg_precision)
-            metrics["toxic_avg_recall"] = float(toxic_avg_recall)
-            metrics["toxic_avg_f1"] = float(toxic_avg_f1)
-            metrics["fpr_score_avg"] = float(fpr_score_avg)
-            metrics["avg_sum"] = float(avg_sum)
-            metrics["epoch"] = epoch
-            metrics["train_loss"] = total_loss / max(len(train_loader), 1)
+            epoch_metrics: Dict[str, object] = {
+                "epoch": float(epoch),
+                "train_loss": float(total_loss / max(len(train_loader), 1)),
+                "train_size": float(len(train_items_all)),
+                "eval": eval_metrics,
+                "avg_acc": float(avg_acc),
+                "macro_avg_precision": float(macro_avg_precision),
+                "macro_avg_recall": float(macro_avg_recall),
+                "macro_avg_f1": float(macro_avg_f1),
+                "non_toxic_avg_precision": float(non_toxic_avg_precision),
+                "non_toxic_avg_recall": float(non_toxic_avg_recall),
+                "non_toxic_avg_f1": float(non_toxic_avg_f1),
+                "toxic_avg_precision": float(toxic_avg_precision),
+                "toxic_avg_recall": float(toxic_avg_recall),
+                "toxic_avg_f1": float(toxic_avg_f1),
+                "fpr_score_avg": float(fpr_score_avg),
+                "avg_sum": float(avg_sum),
+            }
 
             (save_dir / f"metrics_epoch_{epoch}.json").write_text(
-                json.dumps(compact_metrics_for_save(metrics), ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(compact_epoch_metrics_for_save(epoch_metrics), ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
             score = float(avg_sum)
 
             if float(score) > best_avg_sum:
                 best_avg_sum = float(score)
-                best_head_state = {k: v.detach().cpu() for k, v in model.head.state_dict().items()}
+                best_metrics = dict(epoch_metrics)
+                best_metrics["best_metric"] = "avg_sum"
+                best_metrics["best_score"] = float(score)
+                best_head_state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
                 ckpt = {
                     "head": best_head_state,
                     "config": asdict(backbone.config),
@@ -764,17 +1031,23 @@ def main() -> None:
                     ckpt["lora_cfg"] = json.loads(lora_cfg.to_json())
                     ckpt["lora_replaced"] = list(lora_replaced)
                 torch.save(ckpt, save_dir / "best_head.pt")
+                (save_dir / "best_metrics.json").write_text(
+                    json.dumps(compact_epoch_metrics_for_save(best_metrics), ensure_ascii=False, indent=2), encoding="utf-8"
+                )
                 if lora_cfg is not None:
                     (save_dir / "lora_config.json").write_text(lora_cfg.to_json(), encoding="utf-8")
                     torch.save({k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}, save_dir / "lora_adapter.pt")
+
+            parts = [f"{k}:{float(eval_metrics[k]['f1']):.4f}" for k in eval_metrics]
+            print(f"[eval] epoch {epoch}/{args.epochs} avg_sum {avg_sum:.4f} " + " ".join(parts))
     finally:
         csv_f.close()
 
-    if best_head_state is not None:
-        model.head.load_state_dict(best_head_state, strict=True)
+    if args.save_full_model and best_head_state is not None:
+        head.load_state_dict(best_head_state, strict=True)
         full_ckpt = {
-            "backbone": {k: v.detach().cpu() for k, v in model.backbone.state_dict().items()},
-            "head": {k: v.detach().cpu() for k, v in model.head.state_dict().items()},
+            "backbone": {k: v.detach().cpu() for k, v in backbone.state_dict().items()},
+            "head": {k: v.detach().cpu() for k, v in head.state_dict().items()},
             "config": asdict(backbone.config),
             "tokenizer_name_or_path": args.tokenizer_name_or_path,
             "max_length": args.max_length,
@@ -783,6 +1056,11 @@ def main() -> None:
             "num_labels": 2,
         }
         torch.save(full_ckpt, save_dir / "full_model.pt")
+
+    (save_dir / "benchmark_summary.json").write_text(
+        json.dumps({"datasets": datasets_arg, "best": compact_epoch_metrics_for_save(best_metrics)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     print(f"done. best_avg_sum={best_avg_sum:.4f}. saved at: {save_dir}")
 
