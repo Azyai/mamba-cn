@@ -1,55 +1,20 @@
 # Mamba-2 (Minimal)
 
-This repository has been pruned to keep only the Python code required to run the Mamba-2 block (and a simplified variant).
-
-Paper: https://arxiv.org/abs/2405.21060
-
-## Installation
-
-From this repository:
+## 安装与环境
 
 ```bash
 pip install .
 ```
 
-Optional speedups:
+可选加速：
 
 ```bash
 pip install "mamba-ssm[causal-conv1d]"
 ```
 
-Upstream requirements (unchanged by this pruning):
+依赖环境：Linux / NVIDIA GPU / PyTorch 1.12+ / CUDA 11.6+
 
-- Linux
-- NVIDIA GPU
-- PyTorch 1.12+
-- CUDA 11.6+
-
-## Usage
-
-Mamba-2 block:
-
-```python
-import torch
-from mamba_ssm import Mamba2
-
-batch, length, dim = 2, 64, 256
-x = torch.randn(batch, length, dim).to("cuda")
-model = Mamba2(
-    d_model=dim,
-    d_state=64,
-    d_conv=4,
-    expand=2,
-).to("cuda")
-y = model(x)
-assert y.shape == x.shape
-```
-
-## Offensive Training
-
-This repo includes two training entrypoints for offensive-text classification: a 2.8B base model (frozen backbone + MLP head) and an 8B LoRA finetuning script.
-
-### 2.8B Base (train_offensive.py)
+## 2.8B 训练脚本（LoRA）
 
 ```bash
 cd /hy-tmp/mamba
@@ -57,40 +22,18 @@ export HF_ENDPOINT=https://hf-mirror.com
 python -m pip install -e ".[train]"
 
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive.py \
-  --pretrained_dir predict \
-  --tokenizer_name_or_path gpt2 \
-  --train_csv dataset/COLDataset/train.csv \
-  --dev_csv dataset/COLDataset/dev.csv \
-  --fp16 \
-  --batch_size 8 \
-  --grad_accum 4 \
-  --max_length 256 \
-  --epochs 3 \
-  --save_dir runs/offensive_head
-```
-
-2.8B 双数据集训练（cold + toxicn，支持 dataset_weights / balance_datasets）：
-
-```bash
-cd /hy-tmp/mamba
-export HF_ENDPOINT=https://hf-mirror.com
-python -m pip install -e ".[train]"
-
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive.py \
-  --pretrained_dir predict \
+  --pretrained_dir predict/mamba2-2.8b \
   --tokenizer_name_or_path gpt2 \
   --datasets cold,toxicn \
   --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
   --toxicn_dev_ratio 0.1 \
   --fp16 \
-  --batch_size 8 \
-  --grad_accum 4 \
-  --max_length 256 \
-  --epochs 3 \
-  --save_dir runs/offensive_head_multi
+  --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
+  --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
+  --save_dir runs/lora_2_8b_1
 ```
 
-### NVIDIA Mamba2-8B LoRA (train_offensive_nvidia8b.py)
+## 8B 训练脚本（LoRA）
 
 ```bash
 cd /hy-tmp/mamba
@@ -107,17 +50,14 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive_nvidia8b.py \
   --save_dir runs/lora3_b
 ```
 
-## Prediction and Evaluation
+## test 目录下的测试命令
 
-### Offline eval on dev/test splits
+离线评估：
 
 ```bash
 cd /hy-tmp/mamba
-python -m pip install -e ".[train]"
-
-# eval run_dir on multiple datasets
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/eval_run.py \
-  --run_dir runs/offensive_head_multi \
+  --run_dir runs/lora3_b \
   --datasets cold,toxicn \
   --split dev \
   --max_items 0 \
@@ -126,54 +66,25 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/eval_run.py \
   --dtype fp16
 ```
 
-### Inspect a run directory (checkpoint + metrics summary)
+查看 run 产物概览：
 
 ```bash
 cd /hy-tmp/mamba
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/inspect_run.py \
-  --run_dir runs/offensive_head_multi \
+  --run_dir runs/lora3_b \
   --dataset_for_threshold toxicn
 ```
 
-### Web demo server
+Web demo：
 
 ```bash
 cd /hy-tmp/mamba
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/web_toxicity_demo/server.py \
-  --run_dir runs/offensive_head_multi \
+  --run_dir runs/lora3_b \
   --host 127.0.0.1 \
   --port 8000 \
   --device cuda \
   --dtype fp16
 ```
 
-Then open http://127.0.0.1:8000/ in your browser.
-
-Simplified block:
-
-```python
-import torch
-from mamba_ssm import Mamba2Simple
-
-batch, length, dim = 2, 64, 256
-x = torch.randn(batch, length, dim).to("cuda")
-model = Mamba2Simple(
-    d_model=dim,
-    d_state=64,
-    d_conv=4,
-    expand=2,
-).to("cuda")
-y = model(x)
-assert y.shape == x.shape
-```
-
-## Citation
-
-```bibtex
-@inproceedings{mamba2,
-  title={Transformers are {SSM}s: Generalized Models and Efficient Algorithms Through Structured State Space Duality},
-  author={Dao, Tri and Gu, Albert},
-  booktitle={International Conference on Machine Learning (ICML)},
-  year={2024}
-}
-```
+浏览器打开：http://127.0.0.1:8000/

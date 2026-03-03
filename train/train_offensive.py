@@ -400,8 +400,6 @@ def main() -> None:
     parser.add_argument("--focal_gamma", type=float, default=2.0)
     parser.add_argument("--focal_alpha_non_toxic", type=float, default=1.0)
     parser.add_argument("--focal_alpha_toxic", type=float, default=1.0)
-    parser.add_argument("--best_metric", type=str, default="avg_sum")
-    parser.add_argument("--best_fpr_max", type=float, default=1.0)
     parser.add_argument("--eval_optimize_threshold", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--eval_threshold_min", type=float, default=0.05)
     parser.add_argument("--eval_threshold_max", type=float, default=0.95)
@@ -412,10 +410,6 @@ def main() -> None:
     parser.add_argument("--save_full_model", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
     args = parser.parse_args()
-
-    best_metric_lower = str(args.best_metric).strip().lower()
-    if float(args.eval_threshold_fpr_max) == 1.0 and "under_fpr" in best_metric_lower:
-        args.eval_threshold_fpr_max = float(args.best_fpr_max)
 
     set_seed(args.seed)
 
