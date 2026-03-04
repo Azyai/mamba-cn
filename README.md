@@ -1,4 +1,4 @@
-# Mamba-2 (Minimal)
+# Mamba-FK-Lora
 
 ## 安装与环境
 
