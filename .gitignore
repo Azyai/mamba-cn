@@ -5,3 +5,4 @@ mamba_ssm.egg-info/
 dataset/
 .trae/
 .venv/
+build/**

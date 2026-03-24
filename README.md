@@ -5,23 +5,24 @@
 建议先创建并激活 conda 环境，并安装 GPU 版 PyTorch（含 CUDA）。
 
 ```bash
-conda create -n mamba python=3.10 -y
+conda create -n mamba -y
 conda activate mamba
 
 # 根据你的 CUDA 版本选择合适的 pytorch/torchvision/torchaudio 组合
-conda install -y pytorch torchvision torchaudio pytorch-cuda=11.6 -c pytorch -c nvidia
+conda install -c pytorch -c nvidia pytorch pytorch-cuda=12.4 -y
+export HF_ENDPOINT=https://hf-mirror.com
 ```
 
 ```bash
-pip install .
-```
+python -m pip install ".[train]"
 
-可选加速：
-
-```bash
 pip install "mamba-ssm[causal-conv1d]"
+
+# 修复 Conda 环境下 PyTorch 可能出现的 libtorch_cpu.so: undefined symbol: iJIT_NotifyEvent 问题
+pip install mkl==2024.0.0
 ```
-依赖环境：Linux / NVIDIA GPU / PyTorch 1.12+ / CUDA 11.6+
+
+依赖环境：Linux / NVIDIA GPU / PyTorch / CUDA 12.4+
 
 ## 项目目录结构
 
@@ -76,11 +77,7 @@ pip install "mamba-ssm[causal-conv1d]"
 ## 2.8B 训练脚本（LoRA）
 
 ```bash
-cd /hy-tmp/mamba
-export HF_ENDPOINT=https://hf-mirror.com
-python -m pip install -e ".[train]"
-
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive.py \
+CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
   --pretrained_dir predict/mamba2-2.8b \
   --tokenizer_name_or_path gpt2 \
   --datasets cold,toxicn \
@@ -154,11 +151,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive.py \
 ## 8B 训练脚本（LoRA）
 
 ```bash
-cd /hy-tmp/mamba
-export HF_ENDPOINT=https://hf-mirror.com
-python -m pip install -e ".[train]" sentencepiece
-
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive_nvidia8b.py \
+CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --datasets cold,toxicn \
   --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
   --toxicn_dev_ratio 0.1 \
@@ -233,8 +226,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python train/train_offensive_nvidia8b.py \
 离线评估：
 
 ```bash
-cd /hy-tmp/mamba
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/eval_run.py \
+CUDA_VISIBLE_DEVICES=0 python test/val/eval_run.py \
   --run_dir runs/lora_8_b_1 \
   --datasets cold,toxicn \
   --split dev \
@@ -247,8 +239,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/eval_run.py \
 查看 run 产物概览：
 
 ```bash
-cd /hy-tmp/mamba
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/inspect_run.py \
+CUDA_VISIBLE_DEVICES=0 python test/val/inspect_run.py \
   --run_dir runs/lora_8_b_1 \
   --dataset_for_threshold toxicn
 ```
@@ -256,8 +247,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/val/inspect_run.py \
 Web demo：
 
 ```bash
-cd /hy-tmp/mamba
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/web_toxicity_demo/server.py \
+CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
   --run_dir runs/lora_8_b_1 \
   --host 127.0.0.1 \
   --port 8000 \
@@ -265,4 +255,4 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python test/web_toxicity_demo/server.py \
   --dtype fp16
 ```
 
-浏览器打开：http://127.0.0.1:8000/
+浏览器打开：http://IP:8000/
