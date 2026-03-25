@@ -19,17 +19,19 @@
         --green: #34c759;
       }
 
-      html, body { height: 100%; }
+      html { min-height: 100%; }
       body {
         margin: 0;
+        min-height: 100vh;
+        background-attachment: fixed;
         font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
         color: var(--text);
-        background: radial-gradient(1200px 600px at 20% 10%, rgba(0, 122, 255, 0.14), rgba(0, 122, 255, 0) 60%),
-                    radial-gradient(1000px 600px at 80% 0%, rgba(52, 199, 89, 0.10), rgba(52, 199, 89, 0) 60%),
-                    var(--bg);
+        background-image: radial-gradient(1200px 600px at 20% 10%, rgba(0, 122, 255, 0.14), rgba(0, 122, 255, 0) 60%),
+                          radial-gradient(1000px 600px at 80% 0%, rgba(52, 199, 89, 0.10), rgba(52, 199, 89, 0) 60%);
+        background-color: var(--bg);
       }
 
-      .container { max-width: 960px; margin: 0 auto; padding: 28px 18px 60px; }
+      .container { max-width: 1280px; margin: 0 auto; padding: 28px 18px 60px; }
       .header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
       h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0; font-weight: 700; }
       .sub { margin-top: 10px; color: var(--muted); font-size: 13px; }
@@ -169,17 +171,19 @@
         <div class="card-inner">
           <textarea id="input" placeholder="输入文本。例如：&#10;这是一条正常文本\\, 你这个傻X"></textarea>
           
-          <label style="margin-top: 8px; display: block; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); cursor: pointer;">
-            <span style="display:inline-block; width:80px; font-weight:bold;">图片上传:</span> 
-            <input type="file" id="imageUpload" accept="image/*" />
-            <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法图片，禁止假后缀名)</div>
-          </label>
-          
-          <label style="margin-top: 8px; display: block; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); cursor: pointer;">
-            <span style="display:inline-block; width:80px; font-weight:bold;">音频上传:</span> 
-            <input type="file" id="audioUpload" accept="audio/*" />
-            <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法音频，如 .wav / .mp3)</div>
-          </label>
+          <div style="display: flex; gap: 12px; margin-top: 8px;">
+            <label style="flex: 1; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); cursor: pointer;">
+              <span style="display:inline-block; width:80px; font-weight:bold;">图片上传:</span> 
+              <input type="file" id="imageUpload" accept="image/*" />
+              <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法图片，禁止假后缀名)</div>
+            </label>
+            
+            <label style="flex: 1; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); cursor: pointer;">
+              <span style="display:inline-block; width:80px; font-weight:bold;">音频上传:</span> 
+              <input type="file" id="audioUpload" accept="audio/*" />
+              <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法音频，如 .wav / .mp3)</div>
+            </label>
+          </div>
 
           <div class="row">
             <label>
@@ -205,17 +209,20 @@
             <div class="chip err" id="err"></div>
           </div>
 
-          <table id="table" style="display:none;">
-            <thead>
-              <tr>
-                <th style="width:52px;">#</th>
-                <th>模态 (输入内容)</th>
-                <th style="width:120px;">p(toxic)</th>
-                <th style="width:110px;">预测</th>
-              </tr>
-            </thead>
-            <tbody id="tbody"></tbody>
-          </table>
+          <div id="tableContainer" style="display:none; margin-top: 14px; max-height: 480px; overflow-y: auto;">
+            <table id="table" style="margin-top: 0;">
+              <thead>
+                <tr>
+                  <th style="width:52px;">#</th>
+                  <th>模态 (输入内容)</th>
+                  <th style="width:120px;">p(toxic)</th>
+                  <th style="width:110px;">预测</th>
+                  <th style="width:200px;">检测信息(耗时)</th>
+                </tr>
+              </thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -317,7 +324,7 @@
         }
 
         const numInferences = Math.max(texts.length, image_b64 ? 1 : 0, audio_b64 ? 1 : 0);
-        document.getElementById("table").style.display = "";
+        document.getElementById("tableContainer").style.display = "";
         const tb = document.getElementById("tbody");
         
         const reqId = ++requestCounter;
@@ -345,7 +352,8 @@
               `<td>${totalRows}</td>` +
               `<td>${displayContent}</td>` +
               `<td id="score-${rowId}" style="color:var(--muted)">正在检测中...</td>` +
-              `<td id="pred-${rowId}">-</td>`;
+              `<td id="pred-${rowId}">-</td>` +
+              `<td id="info-${rowId}">-</td>`;
             tb.appendChild(tr);
         }
 
@@ -361,8 +369,9 @@
               throw new Error(data && data.error ? data.error : "请求失败");
             }
 
-            document.getElementById("meta").textContent =
-              `threshold_mode=${data.threshold_mode} threshold=${data.threshold} latency_ms=${data.latency_ms.toFixed(1)}`;
+            // Remove global meta info since it's now in the table
+            // document.getElementById("meta").textContent =
+            //  `threshold_mode=${data.threshold_mode} threshold=${data.threshold} latency_ms=${data.latency_ms.toFixed(1)}`;
 
             const rows = data.results || [];
             for (let i = 0; i < rows.length; i++) {
@@ -379,12 +388,15 @@
               let displayContent = modalities.join(" + ");
               if (r.has_text) displayContent += `<br/><span style="color:var(--muted);font-size:12px;">"${esc(r.text)}"</span>`;
 
+              const infoHTML = `<span style="font-size:12px;color:var(--muted)">threshold_mode=${data.threshold_mode}<br/>threshold=${Number(data.threshold).toFixed(6)}<br/>latency_ms=${Number(data.latency_ms).toFixed(1)}</span>`;
+
               const tr = document.getElementById(rInfo.id);
               tr.innerHTML =
                 `<td>${rInfo.index}</td>` +
                 `<td>${displayContent}</td>` +
                 `<td>${Number(r.p_toxic).toFixed(6)}</td>` +
-                `<td>${predHTML}</td>`;
+                `<td>${predHTML}</td>` +
+                `<td>${infoHTML}</td>`;
             }
         } catch (e) {
             document.getElementById("err").textContent = e.message || String(e);
@@ -409,7 +421,7 @@
         document.getElementById("audioUpload").value = "";
         document.getElementById("err").textContent = "";
         document.getElementById("meta").textContent = "";
-        document.getElementById("table").style.display = "none";
+        document.getElementById("tableContainer").style.display = "none";
         document.getElementById("tbody").innerHTML = "";
         totalRows = 0;
       });
