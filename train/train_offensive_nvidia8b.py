@@ -28,26 +28,30 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def read_cold_csv(path: Path) -> List[Tuple[str, int]]:
-    items: List[Tuple[str, int]] = []
+def read_cold_csv(path: Path) -> List[Tuple[str, int, str, str]]:
+    items: List[Tuple[str, int, str, str]] = []
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             text = row.get("TEXT") or row.get("text") or row.get("content")
             label = row.get("label") or row.get("LABEL")
+            image_path = row.get("image_path") or row.get("image") or ""
+            audio_path = row.get("audio_path") or row.get("audio") or ""
             if text is None or label is None:
                 continue
-            items.append((text, int(label)))
+            items.append((text, int(label), image_path, audio_path))
     return items
 
 
-def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
-    items: List[Tuple[str, int]] = []
+def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int, str, str]]:
+    items: List[Tuple[str, int, str, str]] = []
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             text = row.get("content") or row.get("TEXT") or row.get("text")
             label = row.get("toxic") or row.get("label") or row.get("LABEL")
+            image_path = row.get("image_path") or row.get("image") or ""
+            audio_path = row.get("audio_path") or row.get("audio") or ""
             if text is None or label is None:
                 continue
             if add_metadata:
@@ -56,20 +60,22 @@ def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str
                 target = row.get("target", "")
                 prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
                 text = prefix + text
-            items.append((text, int(label)))
+            items.append((text, int(label), image_path, audio_path))
     return items
 
 
-def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
+def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int, str, str]]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    items: List[Tuple[str, int]] = []
+    items: List[Tuple[str, int, str, str]] = []
     if isinstance(data, list):
         for row in data:
             if not isinstance(row, dict):
                 continue
             text = row.get("content") or row.get("TEXT") or row.get("text")
             label = row.get("toxic") if "toxic" in row else row.get("label")
+            image_path = row.get("image_path") or row.get("image") or ""
+            audio_path = row.get("audio_path") or row.get("audio") or ""
             if text is None or label is None:
                 continue
             if add_metadata:
@@ -78,18 +84,18 @@ def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[st
                 target = row.get("target", "")
                 prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
                 text = prefix + str(text)
-            items.append((str(text), int(label)))
+            items.append((str(text), int(label), image_path, audio_path))
     return items
 
 
-def split_train_dev(items: List[Tuple[str, int]], dev_ratio: float, seed: int) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+def split_train_dev(items: List[Tuple[str, int, str, str]], dev_ratio: float, seed: int) -> Tuple[List[Tuple[str, int, str, str]], List[Tuple[str, int, str, str]]]:
     if dev_ratio <= 0:
         return items, []
     if dev_ratio >= 1:
         return [], items
     rng = random.Random(seed)
-    pos_idx = [i for i, (_, y) in enumerate(items) if int(y) == 1]
-    neg_idx = [i for i, (_, y) in enumerate(items) if int(y) == 0]
+    pos_idx = [i for i, x in enumerate(items) if int(x[1]) == 1]
+    neg_idx = [i for i, x in enumerate(items) if int(x[1]) == 0]
     rng.shuffle(pos_idx)
     rng.shuffle(neg_idx)
 
@@ -111,16 +117,16 @@ def split_train_dev(items: List[Tuple[str, int]], dev_ratio: float, seed: int) -
     return train_items, dev_items
 
 
-class TextLabelDataset(Dataset):
-    def __init__(self, items: List[Tuple[str, int]]):
+class MultimodalDataset(Dataset):
+    def __init__(self, items: List[Tuple[str, int, str, str]]):
         self.items = items
 
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, idx: int) -> Dict[str, object]:
-        text, label = self.items[idx]
-        return {"text": text, "label": label}
+        text, label, image_path, audio_path = self.items[idx]
+        return {"text": text, "label": label, "image_path": image_path, "audio_path": audio_path}
 
 
 def compute_binary_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, float]:
@@ -319,6 +325,12 @@ def normalize_path_arg(value: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--converted_dir", type=str, default="predict/mamba2-8b-3t-4k_converted")
+    parser.add_argument("--vit_name_or_path", type=str, default="")
+    parser.add_argument("--wav2vec2_name_or_path", type=str, default="")
+    parser.add_argument("--multimodal_cache_dir", type=str, default="predict/multimodal")
+    parser.add_argument("--image_dim", type=int, default=768)
+    parser.add_argument("--audio_dim", type=int, default=768)
+
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
     parser.add_argument("--dev_csv", type=str, default="")
@@ -468,7 +480,7 @@ def main() -> None:
                 if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
                     mixer.use_mem_eff_path = False
 
-    def load_dataset(ds_name: str) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+    def load_dataset(ds_name: str) -> Tuple[List[Tuple[str, int, str, str]], List[Tuple[str, int, str, str]]]:
         if ds_name in {"cold", "coldataset", "col"}:
             dataset_dir = (root / "dataset/COLDataset").resolve()
             train_items = read_cold_csv(dataset_dir / "train.csv")
@@ -510,8 +522,8 @@ def main() -> None:
     (save_dir / "load_info.json").write_text(json.dumps(load_info, ensure_ascii=False, indent=2), encoding="utf-8")
     (save_dir / "backbone_converted_dir.txt").write_text(str(converted_dir), encoding="utf-8")
 
-    train_items_by_dataset: Dict[str, List[Tuple[str, int]]] = {}
-    dev_items_by_dataset: Dict[str, List[Tuple[str, int]]] = {}
+    train_items_by_dataset: Dict[str, List[Tuple[str, int, str, str]]] = {}
+    dev_items_by_dataset: Dict[str, List[Tuple[str, int, str, str]]] = {}
     for ds_name in datasets_arg:
         ds_train, ds_dev = load_dataset(ds_name)
         train_items_by_dataset[ds_name] = ds_train
@@ -535,7 +547,7 @@ def main() -> None:
                 continue
 
     if dataset_weights:
-        weighted: List[Tuple[str, int]] = []
+        weighted: List[Tuple[str, int, str, str]] = []
         for ds_name in datasets_arg:
             items = list(train_items_by_dataset.get(ds_name, []))
             if not items:
@@ -553,7 +565,7 @@ def main() -> None:
         train_items_all = weighted
     elif args.balance_datasets and train_items_by_dataset:
         max_len = max((len(v) for v in train_items_by_dataset.values()), default=0)
-        balanced: List[Tuple[str, int]] = []
+        balanced: List[Tuple[str, int, str, str]] = []
         for ds_name in datasets_arg:
             items = list(train_items_by_dataset.get(ds_name, []))
             if not items:
@@ -564,7 +576,7 @@ def main() -> None:
             balanced.extend(items)
         train_items_all = balanced
     else:
-        train_items_all: List[Tuple[str, int]] = []
+        train_items_all: List[Tuple[str, int, str, str]] = []
         for ds_name in datasets_arg:
             train_items_all.extend(train_items_by_dataset.get(ds_name, []))
 
@@ -575,11 +587,11 @@ def main() -> None:
         if args.max_dev_items and args.max_dev_items > 0:
             dev_items_by_dataset[ds_name] = dev_items_by_dataset[ds_name][: args.max_dev_items]
 
-    train_ds = TextLabelDataset(train_items_all)
+    train_ds = MultimodalDataset(train_items_all)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate)
     dev_loaders: Dict[str, DataLoader] = {}
     for ds_name, ds_dev in dev_items_by_dataset.items():
-        dev_ds = TextLabelDataset(ds_dev)
+        dev_ds = MultimodalDataset(ds_dev)
         dev_loaders[ds_name] = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
 
     head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)

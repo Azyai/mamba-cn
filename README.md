@@ -121,7 +121,9 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --fp16 \
   --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
   --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
-  --save_dir runs/lora_8_b_1
+  --vit_name_or_path google/vit-base-patch16-224 \
+  --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
+  --save_dir runs/lora_8_b_multimodal
 ```
 
 ## test 目录下的测试命令
@@ -141,3 +143,18 @@ CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
 
 浏览器打开：http://IP:8000/
 在界面上不仅可以输入文本，还可以填入图片和音频在服务器上的本地绝对路径进行测试。
+
+## 8B 模型测试 (Web Demo)
+
+与多模态 2.8B 模型类似，可以使用以下命令启动运行 8B 模型的 Web Demo：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+
+CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
+  --run_dir runs/lora_8_b_multimodal \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --device cuda \
+  --dtype fp16
+```
