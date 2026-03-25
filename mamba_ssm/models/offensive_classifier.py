@@ -48,6 +48,21 @@ class FrozenBackboneClassifier(nn.Module):
         self.backbone = backbone
         self.adapter = adapter
         self.head = head
+        
+        # 降维投影层
+        self.image_proj = nn.Linear(image_dim, text_dim) if image_backbone else None
+        self.audio_proj = nn.Linear(audio_dim, text_dim) if audio_backbone else None
+        
+        fusion_dim = text_dim
+        if image_backbone: fusion_dim += text_dim
+        if audio_backbone: fusion_dim += text_dim
+        
+        # 门控机制：抑制噪声特征
+        self.gate = nn.Sequential(
+            nn.Linear(fusion_dim, text_dim),
+            nn.Sigmoid()
+        )
+
 
     @torch.no_grad()
     def freeze_backbone_(self) -> "FrozenBackboneClassifier":
@@ -163,19 +178,37 @@ class MultimodalClassifier(nn.Module):
         else:
             audio_feat = None
 
-        # Concatenate available features
+        # Gated Fusion
+        if image_feat is not None:
+            image_feat = self.image_proj(image_feat)
+        if audio_feat is not None:
+            audio_feat = self.audio_proj(audio_feat)
+        
         feats = [text_feat]
         if image_feat is not None:
             feats.append(image_feat)
         if audio_feat is not None:
             feats.append(audio_feat)
             
-        pooled = torch.cat(feats, dim=-1)
+        concat_feat = torch.cat(feats, dim=-1)
+        gated_weights = self.gate(concat_feat)
+        
+        # 门控相加融合，文本作为骨干基底
+        pooled = text_feat
+        if image_feat is not None:
+            pooled = pooled + (image_feat * gated_weights)
+        if audio_feat is not None:
+            pooled = pooled + (audio_feat * gated_weights)
+            
         logits = self.head(pooled)
         return ForwardOutput(logits=logits, pooled=pooled)
 
     def trainable_state_dict(self) -> Dict[str, object]:
-        out = {"head": self.head.state_dict()}
+        out = {"head": self.head.state_dict(), "gate": self.gate.state_dict()}
+        if self.image_proj is not None:
+            out["image_proj"] = self.image_proj.state_dict()
+        if self.audio_proj is not None:
+            out["audio_proj"] = self.audio_proj.state_dict()
         if self.blank_image is not None:
             out["blank_image"] = self.blank_image.data.detach().cpu()
         if self.blank_audio is not None:

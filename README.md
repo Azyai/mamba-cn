@@ -21,6 +21,11 @@ pip install "mamba-ssm[causal-conv1d]"
 # 图像处理所需依赖
 pip install pillow
 
+# (可选) Web端动态OCR和ASR所需依赖(仅在运行 web_toxicity_demo 时需要)
+pip install paddleocr paddlepaddle-gpu openai-whisper
+# Linux 系统可能还需要安装 ffmpeg 以支持 whisper 音频解析
+# sudo apt-get install ffmpeg
+
 # 修复 Conda 环境下 PyTorch 可能出现的 libtorch_cpu.so: undefined symbol: iJIT_NotifyEvent 问题
 pip install mkl==2024.0.0
 ```
@@ -76,7 +81,7 @@ pip install mkl==2024.0.0
 
 项目所需预训练模型：
 - Mamba文本底座: https://huggingface.co/datasets/ay011123/mamba-fk/upload/main
-- 视觉特征底座: `google/vit-base-patch16-224` (将自动下载至 `predict/multimodal`)
+- 视觉特征底座: `google/vit-base-patch16-224` 或 `OFA-Sys/chinese-clip-vit-base-patch16` (将自动下至 `predict/multimodal`)
 - 听觉特征底座: `facebook/wav2vec2-base-960h` (将自动下载至 `predict/multimodal`)
 
 ## 多模态 2.8B 训练脚本（LoRA）
@@ -88,7 +93,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
   --pretrained_dir predict/mamba2-2.8b \
   --tokenizer_name_or_path gpt2 \
-  --vit_name_or_path google/vit-base-patch16-224 \
+  --vit_name_or_path OFA-Sys/chinese-clip-vit-base-patch16 \
   --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
   --datasets cold,toxicn \
   --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
@@ -103,7 +108,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
 
 | 参数 | 作用 | 取值范围/说明 |
 | --- | --- | --- |
-| `--vit_name_or_path` | 视觉骨干模型路径或HF ID | `google/vit-base-patch16-224` |
+| `--vit_name_or_path` | 视觉骨干模型路径或HF ID | `google/vit-base-patch16-224` 或 `OFA-Sys/chinese-clip-vit-base-patch16` |
 | `--wav2vec2_name_or_path` | 听觉骨干模型路径或HF ID | `facebook/wav2vec2-base-960h` |
 | `--multimodal_cache_dir` | 多模态模型下载缓存目录 | 默认 `predict/multimodal` |
 | `--image_dim` | 视觉特征维度 | 默认 768 |
@@ -121,7 +126,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --fp16 \
   --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
   --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
-  --vit_name_or_path google/vit-base-patch16-224 \
+  --vit_name_or_path OFA-Sys/chinese-clip-vit-base-patch16 \
   --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
   --save_dir runs/lora_8_b_multimodal
 ```

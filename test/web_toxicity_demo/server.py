@@ -32,6 +32,21 @@ class App:
         self.dtype = str(dtype)
         self.dataset_for_threshold = str(dataset_for_threshold)
         self.pretrained_dir = str(pretrained_dir) if pretrained_dir is not None else None
+
+        # Load external reasoning tools on CPU or Device to help inference
+        try:
+            from paddleocr import PaddleOCR
+            self.ocr = PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=(self.device=="cuda"))
+        except ImportError:
+            self.ocr = None
+            print("PaddleOCR is not installed, ignoring OCR.")
+
+        try:
+            import whisper
+            self.asr = whisper.load_model("base", device=self.device)
+        except ImportError:
+            self.asr = None
+            print("Whisper is not installed, ignoring ASR.")
         self._lock = threading.Lock()
         self.predictor: Optional[OffensivePredictor] = None
         self.load_state: Dict[str, Any] = {
@@ -161,7 +176,34 @@ def make_handler(app: App):
                 
                 images_list = [image_path] + [None] * (num_inferences - 1) if image_path else [None] * num_inferences
                 audios_list = [audio_path] + [None] * (num_inferences - 1) if audio_path else [None] * num_inferences
-
+                
+                # Apply OCR & ASR processing as textual supplements during inference time
+                for i in range(num_inferences):
+                    img_file = images_list[i]
+                    aud_file = audios_list[i]
+                    extra_text = ""
+                    
+                    if img_file and app.ocr is not None:
+                        try:
+                            result = app.ocr.ocr(img_file, cls=True)
+                            ocr_texts = [line[1][0] for res in result[0] if res is not None and result[0] is not None]
+                            if ocr_texts:
+                                extra_text += "。图片包含文字：" + " ".join(ocr_texts)
+                        except Exception as e:
+                            print(f"OCR Error: {e}")
+                            
+                    if aud_file and app.asr is not None:
+                        try:
+                            result = app.asr.transcribe(aud_file)
+                            asr_text = result.get("text", "")
+                            if asr_text:
+                                extra_text += "。音频包含文字：" + asr_text
+                        except Exception as e:
+                            print(f"ASR Error: {e}")
+                            
+                    if extra_text:
+                        final_texts[i] = final_texts[i] + extra_text
+                
                 threshold_mode = str(data.get("threshold_mode", "calibrated"))
                 threshold = float(data.get("threshold", 0.5))
                 t0 = time.time()

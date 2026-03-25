@@ -483,7 +483,7 @@ def main() -> None:
     
     if args.vit_name_or_path:
         from transformers import ViTModel
-        image_backbone = ViTModel.from_pretrained(args.vit_name_or_path, cache_dir=str(multimodal_cache_dir)).to(device)
+        image_backbone = AutoModel.from_pretrained(args.vit_name_or_path, cache_dir=str(multimodal_cache_dir)).to(device)
         image_backbone.eval()
         
     if args.wav2vec2_name_or_path:
