@@ -209,7 +209,7 @@
             <thead>
               <tr>
                 <th style="width:52px;">#</th>
-                <th>文本</th>
+                <th>模态 (输入内容)</th>
                 <th style="width:120px;">p(toxic)</th>
                 <th style="width:110px;">预测</th>
               </tr>
@@ -225,12 +225,12 @@
         const s = (raw || "").trim();
         if (!s) return [];
         if (s.includes("\\,")) {
-          return s.split("\\,").map(x => x.trim()).filter(Boolean);
+          return s.split("\\,").map(x => x.trim());
         }
         if (s.includes("\n")) {
-          return s.split(/\n+/).map(x => x.trim()).filter(Boolean);
+          return s.split(/\n+/).map(x => x.trim());
         }
-        return s.split(",").map(x => x.trim()).filter(Boolean);
+        return s.split(",").map(x => x.trim());
       }
 
       function esc(s) {
@@ -291,6 +291,9 @@
         });
       }
 
+      let requestCounter = 0;
+      let totalRows = 0;
+
       async function predict() {
         const input = document.getElementById("input").value;
         const imgFile = document.getElementById("imageUpload").files[0];
@@ -307,50 +310,92 @@
         const threshold = parseFloat(document.getElementById("threshold").value || "0.5");
 
         document.getElementById("err").textContent = "";
-        document.getElementById("meta").textContent = "";
-        document.getElementById("table").style.display = "none";
-        document.getElementById("tbody").innerHTML = "";
 
-        if (texts.length === 0) {
-            if (image_b64 || audio_b64) {
-                texts.push("");
-            } else {
-                document.getElementById("err").textContent = "请输入至少一种模态数据。";
-                return;
+        if (texts.length === 0 && !image_b64 && !audio_b64) {
+            document.getElementById("err").textContent = "请输入至少一种模态数据。";
+            return;
+        }
+
+        const numInferences = Math.max(texts.length, image_b64 ? 1 : 0, audio_b64 ? 1 : 0);
+        document.getElementById("table").style.display = "";
+        const tb = document.getElementById("tbody");
+        
+        const reqId = ++requestCounter;
+        const rowIds = [];
+        for (let i = 0; i < numInferences; i++) {
+            totalRows++;
+            const tr = document.createElement("tr");
+            const rowId = `row-${reqId}-${i}`;
+            rowIds.push({ id: rowId, index: totalRows });
+            tr.id = rowId;
+            
+            const tText = texts[i] || "";
+            const hasImg = i === 0 && !!image_b64;
+            const hasAud = i === 0 && !!audio_b64;
+            
+            let modalities = [];
+            if (tText) modalities.push("文本");
+            if (hasImg) modalities.push("图片");
+            if (hasAud) modalities.push("音频");
+            
+            let displayContent = modalities.join(" + ");
+            if (tText) displayContent += `<br/><span style="color:var(--muted);font-size:12px;">"${esc(tText)}"</span>`;
+            
+            tr.innerHTML =
+              `<td>${totalRows}</td>` +
+              `<td>${displayContent}</td>` +
+              `<td id="score-${rowId}" style="color:var(--muted)">正在检测中...</td>` +
+              `<td id="pred-${rowId}">-</td>`;
+            tb.appendChild(tr);
+        }
+
+        try {
+            const resp = await fetch("/api/predict", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ texts, image_b64, audio_b64, threshold_mode: thresholdMode, threshold })
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+              if (resp.status === 503) await refreshStatus();
+              throw new Error(data && data.error ? data.error : "请求失败");
+            }
+
+            document.getElementById("meta").textContent =
+              `threshold_mode=${data.threshold_mode} threshold=${data.threshold} latency_ms=${data.latency_ms.toFixed(1)}`;
+
+            const rows = data.results || [];
+            for (let i = 0; i < rows.length; i++) {
+              const r = rows[i];
+              const rInfo = rowIds[i];
+              if (!rInfo || !document.getElementById(rInfo.id)) continue;
+              
+              const predHTML = r.label === 1 ? `<span class="tag bad">toxic</span>` : `<span class="tag good">non-toxic</span>`;
+              
+              let modalities = [];
+              if (r.has_text) modalities.push("文本");
+              if (r.has_image) modalities.push("图片");
+              if (r.has_audio) modalities.push("音频");
+              let displayContent = modalities.join(" + ");
+              if (r.has_text) displayContent += `<br/><span style="color:var(--muted);font-size:12px;">"${esc(r.text)}"</span>`;
+
+              const tr = document.getElementById(rInfo.id);
+              tr.innerHTML =
+                `<td>${rInfo.index}</td>` +
+                `<td>${displayContent}</td>` +
+                `<td>${Number(r.p_toxic).toFixed(6)}</td>` +
+                `<td>${predHTML}</td>`;
+            }
+        } catch (e) {
+            document.getElementById("err").textContent = e.message || String(e);
+            for (const rInfo of rowIds) {
+                const tr = document.getElementById(rInfo.id);
+                if (tr) {
+                    document.getElementById(`score-${rInfo.id}`).textContent = "请求失败";
+                    document.getElementById(`score-${rInfo.id}`).style.color = "var(--red)";
+                }
             }
         }
-
-        const resp = await fetch("/api/predict", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ texts, image_b64, audio_b64, threshold_mode: thresholdMode, threshold })
-        });
-        const data = await resp.json();
-        if (!resp.ok) {
-          if (resp.status === 503) {
-            await refreshStatus();
-          }
-          document.getElementById("err").textContent = data && data.error ? data.error : "请求失败";
-          return;
-        }
-
-        document.getElementById("meta").textContent =
-          `n=${data.n} threshold_mode=${data.threshold_mode} threshold=${data.threshold} latency_ms=${data.latency_ms.toFixed(1)}`;
-
-        const rows = data.results || [];
-        const tb = document.getElementById("tbody");
-        for (let i = 0; i < rows.length; i++) {
-          const r = rows[i];
-          const pred = r.label === 1 ? `<span class="tag bad">toxic</span>` : `<span class="tag good">non-toxic</span>`;
-          const tr = document.createElement("tr");
-          tr.innerHTML =
-            `<td>${i + 1}</td>` +
-            `<td>${esc(r.text)}</td>` +
-            `<td>${Number(r.p_toxic).toFixed(6)}</td>` +
-            `<td>${pred}</td>`;
-          tb.appendChild(tr);
-        }
-        document.getElementById("table").style.display = "";
       }
 
       document.getElementById("run").addEventListener("click", () => {
@@ -366,6 +411,7 @@
         document.getElementById("meta").textContent = "";
         document.getElementById("table").style.display = "none";
         document.getElementById("tbody").innerHTML = "";
+        totalRows = 0;
       });
 
       (async () => {

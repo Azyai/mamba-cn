@@ -118,22 +118,91 @@ def make_handler(app: App):
                 texts = data.get("texts", [])
                 if not isinstance(texts, list):
                     raise ValueError("texts 必须是数组")
-                texts = [str(x) for x in texts if str(x).strip()]
-                if not texts:
-                    raise ValueError("texts 不能为空")
+                texts = [str(x) for x in texts]
+                
+                image_b64 = data.get("image_b64", "")
+                audio_b64 = data.get("audio_b64", "")
+                
+                image_path = None
+                img_temp = None
+                if image_b64:
+                    import tempfile
+                    import base64
+                    try:
+                        b64_str = image_b64.split(",")[-1]
+                        img_bytes = base64.b64decode(b64_str)
+                        img_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                        img_temp.write(img_bytes)
+                        img_temp.close()
+                        image_path = img_temp.name
+                    except Exception as e:
+                        pass
+                
+                audio_path = None
+                aud_temp = None
+                if audio_b64:
+                    import tempfile
+                    import base64
+                    try:
+                        b64_str = audio_b64.split(",")[-1]
+                        aud_bytes = base64.b64decode(b64_str)
+                        aud_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+                        aud_temp.write(aud_bytes)
+                        aud_temp.close()
+                        audio_path = aud_temp.name
+                    except:
+                        pass
+
+                num_inferences = max(len([t for t in texts if t.strip()]), len(texts), 1 if image_path else 0, 1 if audio_path else 0)
+                if num_inferences == 0:
+                    raise ValueError("请输入至少一种模态数据。")
+
+                final_texts = texts + [""] * (num_inferences - len(texts))
+                
+                images_list = [image_path] + [None] * (num_inferences - 1) if image_path else [None] * num_inferences
+                audios_list = [audio_path] + [None] * (num_inferences - 1) if audio_path else [None] * num_inferences
+
                 threshold_mode = str(data.get("threshold_mode", "calibrated"))
                 threshold = float(data.get("threshold", 0.5))
                 t0 = time.time()
-                pred = predictor.predict(texts, threshold_mode=threshold_mode, threshold=threshold)
+                pred = predictor.predict(final_texts, images=images_list, audios=audios_list, threshold_mode=threshold_mode, threshold=threshold)
                 dt = (time.time() - t0) * 1000.0
+                
+                results = []
+                for i in range(num_inferences):
+                    t = final_texts[i]
+                    p = float(pred.p_toxic[i])
+                    y = int(pred.labels[i])
+                    results.append({
+                        "text": t,
+                        "p_toxic": p,
+                        "label": y,
+                        "has_text": bool(t.strip()),
+                        "has_image": bool(images_list[i]),
+                        "has_audio": bool(audios_list[i])
+                    })
+                
                 out: Dict[str, Any] = {
-                    "n": len(texts),
+                    "n": num_inferences,
                     "threshold_mode": pred.threshold_mode,
                     "threshold": pred.threshold,
                     "latency_ms": float(dt),
-                    "results": [{"text": t, "p_toxic": float(p), "label": int(y)} for t, p, y in zip(texts, pred.p_toxic, pred.labels)],
+                    "results": results,
                 }
                 self._send(200, _json_bytes(out), "application/json; charset=utf-8")
+                
+                if image_path:
+                    import os
+                    try:
+                        os.remove(image_path)
+                    except:
+                        pass
+                if audio_path:
+                    import os
+                    try:
+                        os.remove(audio_path)
+                    except:
+                        pass
             except Exception as e:
                 self._send(400, _json_bytes({"error": str(e)}), "application/json; charset=utf-8")
 
