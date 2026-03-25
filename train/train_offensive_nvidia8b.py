@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from mamba_ssm.models.mamba2_backbone import Mamba2Backbone
-from mamba_ssm.models.offensive_classifier import MLPHead, masked_mean_pool
+from mamba_ssm.models.offensive_classifier import MLPHead, MultimodalClassifier, masked_mean_pool
 from mamba_ssm.models.lora import LoRAConfig, inject_lora, lora_state_dict
 from sentencepiece_tokenizer import SentencePieceTokenizer, SentencePieceTokenizerConfig
 
@@ -443,6 +443,28 @@ def main() -> None:
             "请先将预训练 Megatron checkpoint 转换为 safetensors，再运行本训练脚本。"
         )
 
+
+    tokenizer_cache_dir = Path("predict/gpt2") # placeholder
+    multimodal_cache_dir = Path(args.multimodal_cache_dir)
+    if not multimodal_cache_dir.is_absolute():
+        multimodal_cache_dir = root / multimodal_cache_dir
+    multimodal_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    image_processor = None
+    audio_processor = None
+
+    if args.vit_name_or_path:
+        args.vit_name_or_path = args.vit_name_or_path.strip()
+    if args.wav2vec2_name_or_path:
+        args.wav2vec2_name_or_path = args.wav2vec2_name_or_path.strip()
+
+    try:
+        from transformers import AutoImageProcessor, Wav2Vec2FeatureExtractor
+    except ModuleNotFoundError as e:
+        print("Please install transformers and pillow for multimodal support.")
+        print(e)
+        sys.exit(1)
+
     backbone_dtype = None
     if args.bf16:
         backbone_dtype = torch.bfloat16
@@ -452,6 +474,18 @@ def main() -> None:
     backbone = backbone.to(device)
     backbone.freeze_()
     backbone.eval()
+
+
+    image_backbone = None
+    audio_backbone = None
+    
+    if args.vit_name_or_path:
+        from transformers import AutoModel
+        image_backbone = AutoModel.from_pretrained(args.vit_name_or_path, cache_dir=multimodal_cache_dir).to(device)
+        
+    if args.wav2vec2_name_or_path:
+        from transformers import AutoModel
+        audio_backbone = AutoModel.from_pretrained(args.wav2vec2_name_or_path, cache_dir=multimodal_cache_dir).to(device)
 
     if bool(args.train_norm):
         for layer in backbone.layers:
@@ -464,6 +498,21 @@ def main() -> None:
             backbone.norm_f.to(dtype=torch.float32)
             for p in backbone.norm_f.parameters():
                 p.requires_grad = True
+
+
+    fusion_dim = backbone.config.d_model
+
+    
+    classifier = MultimodalClassifier(
+        text_backbone=backbone,
+        head=head,
+        image_backbone=image_backbone,
+        audio_backbone=audio_backbone,
+        text_dim=backbone.config.d_model,
+        image_dim=args.image_dim,
+        audio_dim=args.audio_dim,
+    ).to(device)
+    classifier.freeze_backbones_()
 
     lora_cfg = None
     lora_replaced: List[str] = []
@@ -594,7 +643,6 @@ def main() -> None:
         dev_ds = MultimodalDataset(ds_dev)
         dev_loaders[ds_name] = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
 
-    head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
     if args.lora_enable and int(args.lora_train_head) <= 0:
         for p in head.parameters():
             p.requires_grad = False
@@ -611,6 +659,21 @@ def main() -> None:
             norm_params.append(p)
         else:
             other_params.append(p)
+            
+    # Multimodal Gate Params
+    if hasattr(classifier, "image_proj") and classifier.image_proj is not None:
+        for p in classifier.image_proj.parameters():
+            if p.requires_grad:
+                head_params.append(p)
+    if hasattr(classifier, "audio_proj") and classifier.audio_proj is not None:
+        for p in classifier.audio_proj.parameters():
+            if p.requires_grad:
+                head_params.append(p)
+    if hasattr(classifier, "gate") and classifier.gate is not None:
+        for p in classifier.gate.parameters():
+            if p.requires_grad:
+                head_params.append(p)
+
     for p in head.parameters():
         if p.requires_grad:
             head_params.append(p)
