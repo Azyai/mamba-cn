@@ -1,4 +1,4 @@
-# Mamba-FK-Lora
+# Mamba-FK-Lora (Multimodal Edition)
 
 ## 安装与环境
 
@@ -9,7 +9,7 @@ conda create -n mamba -y
 conda activate mamba
 
 # 根据你的 CUDA 版本选择合适的 pytorch/torchvision/torchaudio 组合
-conda install -c pytorch -c nvidia pytorch pytorch-cuda=12.4 -y
+conda install -c pytorch -c nvidia pytorch pytorch-cuda=12.4 torchvision torchaudio -y
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
@@ -18,11 +18,14 @@ python -m pip install ".[train]"
 
 pip install "mamba-ssm[causal-conv1d]"
 
+# 图像处理所需依赖
+pip install pillow
+
 # 修复 Conda 环境下 PyTorch 可能出现的 libtorch_cpu.so: undefined symbol: iJIT_NotifyEvent 问题
 pip install mkl==2024.0.0
 ```
 
-依赖环境：Linux / NVIDIA GPU / PyTorch / CUDA 12.4+
+依赖环境：Linux / NVIDIA GPU / PyTorch / CUDA 12.4+ / transformers / pillow
 
 ## 项目目录结构
 
@@ -45,6 +48,7 @@ pip install mkl==2024.0.0
 │   ├── ops/
 │   └── utils/
 ├── predict/
+│   ├── multimodal/
 │   ├── gpt2/
 │   ├── mamba2-2.8b/
 │   └── mamba2-8b-3t-4k_converted/
@@ -71,82 +75,41 @@ pip install mkl==2024.0.0
 - https://huggingface.co/datasets/ay011123/mamba-fk-dataset/tree/main
 
 项目所需预训练模型：
-- https://huggingface.co/datasets/ay011123/mamba-fk/upload/main
+- Mamba文本底座: https://huggingface.co/datasets/ay011123/mamba-fk/upload/main
+- 视觉特征底座: `google/vit-base-patch16-224` (将自动下载至 `predict/multimodal`)
+- 听觉特征底座: `facebook/wav2vec2-base-960h` (将自动下载至 `predict/multimodal`)
 
+## 多模态 2.8B 训练脚本（LoRA）
 
-## 2.8B 训练脚本（LoRA）
+支持传入图片和音频数据。训练数据 `csv` 文件需包含 `image_path` 和 `audio_path` 字段。
 
 ```bash
+export HF_ENDPOINT=https://hf-mirror.com
 CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
   --pretrained_dir predict/mamba2-2.8b \
   --tokenizer_name_or_path gpt2 \
+  --vit_name_or_path google/vit-base-patch16-224 \
+  --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
   --datasets cold,toxicn \
   --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
   --toxicn_dev_ratio 0.1 \
   --fp16 \
   --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
   --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
-  --save_dir runs/lora_2_8b_1
+  --save_dir runs/lora_2_8b_multimodal
 ```
 
-参数说明（2.8B，train_offensive.py）：
+参数说明（新增多模态参数）：
 
 | 参数 | 作用 | 取值范围/说明 |
 | --- | --- | --- |
-| `--pretrained_dir` | 预训练权重目录 | 路径，需包含 config.json 与 model.safetensors |
-| `--dataset_dir` | 默认数据集目录 | 路径 |
-| `--train_csv` | 训练集 CSV 路径 | 路径；为空则用默认 |
-| `--dev_csv` | 验证集 CSV 路径 | 路径；为空则用默认 |
-| `--datasets` | 使用的数据集 | 逗号分隔，例如 cold,toxicn |
-| `--toxicn_csv` | ToxiCN CSV 路径 | 路径 |
-| `--toxicn_train_json` | ToxiCN 训练 JSON 路径 | 路径 |
-| `--toxicn_test_json` | ToxiCN 测试 JSON 路径 | 路径 |
-| `--toxicn_dev_ratio` | ToxiCN dev 划分比例 | 0-1 浮点数 |
-| `--toxicn_add_metadata` | 是否拼接元数据 | true/false |
-| `--balance_datasets` | 数据集均衡采样 | true/false |
-| `--dataset_weights` | 数据集权重 | 形如 cold=1,toxicn=2 |
-| `--max_train_items` | 训练样本上限 | >= 0；0 表示不限制 |
-| `--max_dev_items` | 验证样本上限 | >= 0；0 表示不限制 |
-| `--tokenizer_name_or_path` | tokenizer 名称或路径 | 必填；HF 名称或本地路径 |
-| `--tokenizer_cache_dir` | tokenizer 缓存目录 | 路径 |
-| `--log_every` | 日志频率 | >= 0 step；0 关闭 |
-| `--csv_every` | CSV 记录频率 | >= 0 step；0 关闭 |
-| `--max_length` | 最大序列长度 | 正整数 |
-| `--batch_size` | batch 大小 | 正整数 |
-| `--epochs` | 训练轮数 | 正整数 |
-| `--lr` | 基础学习率 | > 0 |
-| `--lora_lr` | LoRA 学习率 | > 0 |
-| `--head_lr` | 分类头学习率 | > 0 |
-| `--weight_decay` | 权重衰减 | >= 0 |
-| `--grad_accum` | 梯度累积步数 | 正整数 |
-| `--dropout` | dropout | 0-1 |
-| `--head_hidden_dim` | 分类头隐藏维度 | 正整数 |
-| `--fp16` | 开启 FP16 | true/false |
-| `--bf16` | 开启 BF16 | true/false |
-| `--seed` | 随机种子 | 整数 |
-| `--lora_enable` | 启用 LoRA | true/false |
-| `--lora_target` | LoRA 目标模块 | 逗号分隔，如 in_proj |
-| `--lora_r` | LoRA rank | 正整数 |
-| `--lora_alpha` | LoRA alpha | 正整数 |
-| `--lora_dropout` | LoRA dropout | 0-1 |
-| `--lora_train_head` | 是否训练分类头 | <= 0 则冻结；> 0 则训练 |
-| `--gradient_checkpointing` | 梯度检查点 | true/false |
-| `--disable_mem_eff_path` | 关闭高效路径 | true/false |
-| `--class_weight_non_toxic` | 非毒类权重 | > 0 |
-| `--class_weight_toxic` | 毒类权重 | > 0 |
-| `--loss` | 损失函数 | ce 或 focal |
-| `--focal_gamma` | focal gamma | >= 0 |
-| `--focal_alpha_non_toxic` | focal alpha(非毒) | > 0 |
-| `--focal_alpha_toxic` | focal alpha(毒) | > 0 |
-| `--eval_optimize_threshold` | 阈值优化 | true/false |
-| `--eval_threshold_min` | 阈值搜索下限 | 0-1 |
-| `--eval_threshold_max` | 阈值搜索上限 | 0-1 |
-| `--eval_threshold_step` | 阈值步长 | > 0 |
-| `--eval_threshold_fpr_max` | 阈值搜索 FPR 上限 | 0-1 |
-| `--eval_threshold_objective` | 阈值优化目标 | macro_f1/acc/toxic_recall/toxic_f1 |
-| `--train_norm` | 训练归一化层 | true/false |
-| `--save_full_model` | 保存全模型 | true/false |
-| `--save_dir` | 输出目录 | 路径 |
+| `--vit_name_or_path` | 视觉骨干模型路径或HF ID | `google/vit-base-patch16-224` |
+| `--wav2vec2_name_or_path` | 听觉骨干模型路径或HF ID | `facebook/wav2vec2-base-960h` |
+| `--multimodal_cache_dir` | 多模态模型下载缓存目录 | 默认 `predict/multimodal` |
+| `--image_dim` | 视觉特征维度 | 默认 768 |
+| `--audio_dim` | 听觉特征维度 | 默认 768 |
+
+其他参数继承原文本分类任务配置。
 
 ## 8B 训练脚本（LoRA）
 
@@ -161,98 +124,20 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --save_dir runs/lora_8_b_1
 ```
 
-参数说明（8B，train_offensive_nvidia8b.py）：
-
-| 参数 | 作用 | 取值范围/说明 |
-| --- | --- | --- |
-| `--converted_dir` | 8B 转换后权重目录 | 路径，需包含 config.json 与 model.safetensors |
-| `--dataset_dir` | 默认数据集目录 | 路径 |
-| `--train_csv` | 训练集 CSV 路径 | 路径；为空则用默认 |
-| `--dev_csv` | 验证集 CSV 路径 | 路径；为空则用默认 |
-| `--datasets` | 使用的数据集 | 逗号分隔，例如 cold,toxicn |
-| `--toxicn_csv` | ToxiCN CSV 路径 | 路径 |
-| `--toxicn_train_json` | ToxiCN 训练 JSON 路径 | 路径 |
-| `--toxicn_test_json` | ToxiCN 测试 JSON 路径 | 路径 |
-| `--toxicn_dev_ratio` | ToxiCN dev 划分比例 | 0-1 浮点数 |
-| `--toxicn_add_metadata` | 是否拼接元数据 | true/false |
-| `--balance_datasets` | 数据集均衡采样 | true/false |
-| `--dataset_weights` | 数据集权重 | 形如 cold=1,toxicn=2 |
-| `--max_train_items` | 训练样本上限 | >= 0；0 表示不限制 |
-| `--max_dev_items` | 验证样本上限 | >= 0；0 表示不限制 |
-| `--tokenizer_model_path` | SentencePiece 模型路径 | 路径 |
-| `--tokenizer_add_bos` | tokenizer 加 BOS | true/false |
-| `--tokenizer_no_eos` | tokenizer 不加 EOS | true/false |
-| `--max_length` | 最大序列长度 | 正整数 |
-| `--batch_size` | batch 大小 | 正整数 |
-| `--epochs` | 训练轮数 | 正整数 |
-| `--lr` | 基础学习率 | > 0 |
-| `--lora_lr` | LoRA 学习率 | > 0 |
-| `--head_lr` | 分类头学习率 | > 0 |
-| `--weight_decay` | 权重衰减 | >= 0 |
-| `--grad_accum` | 梯度累积步数 | 正整数 |
-| `--dropout` | dropout | 0-1 |
-| `--head_hidden_dim` | 分类头隐藏维度 | 正整数 |
-| `--fp16` | 开启 FP16 | true/false |
-| `--bf16` | 开启 BF16 | true/false |
-| `--seed` | 随机种子 | 整数 |
-| `--log_every` | 日志频率 | >= 0 step；0 关闭 |
-| `--csv_every` | CSV 记录频率 | >= 0 step；0 关闭 |
-| `--save_full_model` | 保存全模型 | true/false |
-| `--lora_enable` | 启用 LoRA | true/false |
-| `--lora_target` | LoRA 目标模块 | 逗号分隔，如 in_proj |
-| `--lora_r` | LoRA rank | 正整数 |
-| `--lora_alpha` | LoRA alpha | 正整数 |
-| `--lora_dropout` | LoRA dropout | 0-1 |
-| `--lora_train_head` | 是否训练分类头 | <= 0 则冻结；> 0 则训练 |
-| `--gradient_checkpointing` | 梯度检查点 | true/false |
-| `--disable_mem_eff_path` | 关闭高效路径 | true/false |
-| `--class_weight_non_toxic` | 非毒类权重 | > 0 |
-| `--class_weight_toxic` | 毒类权重 | > 0 |
-| `--loss` | 损失函数 | ce 或 focal |
-| `--focal_gamma` | focal gamma | >= 0 |
-| `--focal_alpha_non_toxic` | focal alpha(非毒) | > 0 |
-| `--focal_alpha_toxic` | focal alpha(毒) | > 0 |
-| `--eval_optimize_threshold` | 阈值优化 | true/false |
-| `--eval_threshold_min` | 阈值搜索下限 | 0-1 |
-| `--eval_threshold_max` | 阈值搜索上限 | 0-1 |
-| `--eval_threshold_step` | 阈值步长 | > 0 |
-| `--eval_threshold_fpr_max` | 阈值搜索 FPR 上限 | 0-1 |
-| `--eval_threshold_objective` | 阈值优化目标 | macro_f1/acc/toxic_recall/toxic_f1 |
-| `--train_norm` | 训练归一化层 | true/false |
-| `--save_dir` | 输出目录 | 路径 |
-
 ## test 目录下的测试命令
 
-离线评估：
+多模态 Web demo 演示（支持纯文本、纯图片、纯音频或任意多模态组合输入）：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python test/val/eval_run.py \
-  --run_dir runs/lora_8_b_1 \
-  --datasets cold,toxicn \
-  --split dev \
-  --max_items 0 \
-  --batch_size 8 \
-  --device cuda \
-  --dtype fp16
-```
+export HF_ENDPOINT=https://hf-mirror.com
 
-查看 run 产物概览：
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python test/val/inspect_run.py \
-  --run_dir runs/lora_8_b_1 \
-  --dataset_for_threshold toxicn
-```
-
-Web demo：
-
-```bash
 CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
-  --run_dir runs/lora_8_b_1 \
-  --host 127.0.0.1 \
+  --run_dir runs/lora_2_8b_multimodal \
+  --host 0.0.0.0 \
   --port 8000 \
   --device cuda \
   --dtype fp16
 ```
 
 浏览器打开：http://IP:8000/
+在界面上不仅可以输入文本，还可以填入图片和音频在服务器上的本地绝对路径进行测试。

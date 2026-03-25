@@ -36,6 +36,8 @@ train = [
     "sentencepiece",
     "transformers",
     "tqdm",
+    "pillow",
+    "torchaudio==2.5.1",
 ]
 
 

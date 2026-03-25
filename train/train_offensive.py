@@ -25,26 +25,30 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def read_cold_csv(path: Path) -> List[Tuple[str, int]]:
-    items: List[Tuple[str, int]] = []
+def read_cold_csv(path: Path) -> List[Tuple[str, int, str, str]]:
+    items: List[Tuple[str, int, str, str]] = []
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             text = row.get("TEXT") or row.get("text") or row.get("content")
             label = row.get("label") or row.get("LABEL")
+            image_path = row.get("image_path") or row.get("image") or ""
+            audio_path = row.get("audio_path") or row.get("audio") or ""
             if text is None or label is None:
                 continue
-            items.append((text, int(label)))
+            items.append((text, int(label), image_path, audio_path))
     return items
 
 
-def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
-    items: List[Tuple[str, int]] = []
+def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int, str, str]]:
+    items: List[Tuple[str, int, str, str]] = []
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             text = row.get("content") or row.get("TEXT") or row.get("text")
             label = row.get("toxic") or row.get("label") or row.get("LABEL")
+            image_path = row.get("image_path") or row.get("image") or ""
+            audio_path = row.get("audio_path") or row.get("audio") or ""
             if text is None or label is None:
                 continue
             if add_metadata:
@@ -53,20 +57,22 @@ def read_toxicn_csv(path: Path, *, add_metadata: bool = False) -> List[Tuple[str
                 target = row.get("target", "")
                 prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
                 text = prefix + text
-            items.append((text, int(label)))
+            items.append((text, int(label), image_path, audio_path))
     return items
 
 
-def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int]]:
+def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[str, int, str, str]]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    items: List[Tuple[str, int]] = []
+    items: List[Tuple[str, int, str, str]] = []
     if isinstance(data, list):
         for row in data:
             if not isinstance(row, dict):
                 continue
             text = row.get("content") or row.get("TEXT") or row.get("text")
             label = row.get("toxic") if "toxic" in row else row.get("label")
+            image_path = row.get("image_path") or row.get("image") or ""
+            audio_path = row.get("audio_path") or row.get("audio") or ""
             if text is None or label is None:
                 continue
             if add_metadata:
@@ -75,18 +81,18 @@ def read_toxicn_json(path: Path, *, add_metadata: bool = False) -> List[Tuple[st
                 target = row.get("target", "")
                 prefix = f"平台:{platform} 主题:{topic} 目标:{target} "
                 text = prefix + str(text)
-            items.append((str(text), int(label)))
+            items.append((str(text), int(label), image_path, audio_path))
     return items
 
 
-def split_train_dev(items: List[Tuple[str, int]], dev_ratio: float, seed: int) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+def split_train_dev(items: List[Tuple[str, int, str, str]], dev_ratio: float, seed: int) -> Tuple[List[Tuple[str, int, str, str]], List[Tuple[str, int, str, str]]]:
     if dev_ratio <= 0:
         return items, []
     if dev_ratio >= 1:
         return [], items
     rng = random.Random(seed)
-    pos_idx = [i for i, (_, y) in enumerate(items) if int(y) == 1]
-    neg_idx = [i for i, (_, y) in enumerate(items) if int(y) == 0]
+    pos_idx = [i for i, x in enumerate(items) if int(x[1]) == 1]
+    neg_idx = [i for i, x in enumerate(items) if int(x[1]) == 0]
     rng.shuffle(pos_idx)
     rng.shuffle(neg_idx)
 
@@ -108,16 +114,16 @@ def split_train_dev(items: List[Tuple[str, int]], dev_ratio: float, seed: int) -
     return train_items, dev_items
 
 
-class TextLabelDataset(Dataset):
-    def __init__(self, items: List[Tuple[str, int]]):
+class MultimodalDataset(Dataset):
+    def __init__(self, items: List[Tuple[str, int, str, str]]):
         self.items = items
 
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, idx: int) -> Dict[str, object]:
-        text, label = self.items[idx]
-        return {"text": text, "label": label}
+        text, label, image_path, audio_path = self.items[idx]
+        return {"text": text, "label": label, "image_path": image_path, "audio_path": audio_path}
 
 
 def compute_binary_metrics(pred: torch.Tensor, gold: torch.Tensor) -> Dict[str, float]:
@@ -406,6 +412,11 @@ def main() -> None:
     parser.add_argument("--eval_threshold_step", type=float, default=0.01)
     parser.add_argument("--eval_threshold_fpr_max", type=float, default=1.0)
     parser.add_argument("--eval_threshold_objective", type=str, default="macro_f1")
+    parser.add_argument("--vit_name_or_path", type=str, default="")
+    parser.add_argument("--wav2vec2_name_or_path", type=str, default="")
+    parser.add_argument("--multimodal_cache_dir", type=str, default="predict/multimodal")
+    parser.add_argument("--image_dim", type=int, default=768)
+    parser.add_argument("--audio_dim", type=int, default=768)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_full_model", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
@@ -430,7 +441,7 @@ def main() -> None:
     args.toxicn_test_json = normalize_path_arg(args.toxicn_test_json)
 
     try:
-        from transformers import AutoTokenizer
+        from transformers import AutoTokenizer, AutoImageProcessor, Wav2Vec2FeatureExtractor
     except Exception as e:
         raise RuntimeError("缺少 transformers（用于 tokenizer）。请安装: pip install transformers") from e
 
@@ -439,11 +450,23 @@ def main() -> None:
         tokenizer_cache_dir = (root / tokenizer_cache_dir).resolve()
     tokenizer_cache_dir.mkdir(parents=True, exist_ok=True)
 
+    multimodal_cache_dir = Path(args.multimodal_cache_dir)
+    if not multimodal_cache_dir.is_absolute():
+        multimodal_cache_dir = (root / multimodal_cache_dir).resolve()
+    multimodal_cache_dir.mkdir(parents=True, exist_ok=True)
+
     tokenizer = None
+    image_processor = None
+    audio_processor = None
+
+    if args.vit_name_or_path:
+        image_processor = AutoImageProcessor.from_pretrained(args.vit_name_or_path, cache_dir=str(multimodal_cache_dir))
+    if args.wav2vec2_name_or_path:
+        audio_processor = Wav2Vec2FeatureExtractor.from_pretrained(args.wav2vec2_name_or_path, cache_dir=str(multimodal_cache_dir))
 
     try:
         from mamba_ssm.models.mamba2_backbone import Mamba2Backbone
-        from mamba_ssm.models.offensive_classifier import MLPHead, masked_mean_pool
+        from mamba_ssm.models.offensive_classifier import MLPHead, MultimodalClassifier, masked_mean_pool
     except ModuleNotFoundError as e:
         raise RuntimeError(
             "未能导入 mamba_ssm（通常是缺少 triton 或 GPU 环境不满足）。"
@@ -454,6 +477,19 @@ def main() -> None:
     backbone = backbone.to(device)
     backbone.freeze_()
     backbone.eval()
+
+    image_backbone = None
+    audio_backbone = None
+    
+    if args.vit_name_or_path:
+        from transformers import ViTModel
+        image_backbone = ViTModel.from_pretrained(args.vit_name_or_path, cache_dir=str(multimodal_cache_dir)).to(device)
+        image_backbone.eval()
+        
+    if args.wav2vec2_name_or_path:
+        from transformers import Wav2Vec2Model
+        audio_backbone = Wav2Vec2Model.from_pretrained(args.wav2vec2_name_or_path, cache_dir=str(multimodal_cache_dir)).to(device)
+        audio_backbone.eval()
 
     if bool(args.train_norm):
         for layer in backbone.layers:
@@ -467,7 +503,25 @@ def main() -> None:
             for p in backbone.norm_f.parameters():
                 p.requires_grad = True
 
-    head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
+    fusion_dim = backbone.config.d_model
+    if image_backbone is not None:
+        fusion_dim += args.image_dim
+    if audio_backbone is not None:
+        fusion_dim += args.audio_dim
+
+    head = MLPHead(d_model=fusion_dim, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
+    
+    classifier = MultimodalClassifier(
+        text_backbone=backbone,
+        head=head,
+        image_backbone=image_backbone,
+        audio_backbone=audio_backbone,
+        text_dim=backbone.config.d_model,
+        image_dim=args.image_dim,
+        audio_dim=args.audio_dim,
+    ).to(device)
+    classifier.freeze_backbones_()
+
     lora_cfg = None
     lora_replaced: List[str] = []
     lora_targets = tuple(x.strip() for x in str(args.lora_target).split(",") if x.strip())
@@ -610,7 +664,7 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token is not None else tokenizer.unk_token
 
     def collate(batch: List[Dict[str, object]]) -> Dict[str, torch.Tensor]:
-        texts = [x["text"] for x in batch]
+        texts = [str(x["text"]) for x in batch]
         labels = torch.tensor([int(x["label"]) for x in batch], dtype=torch.long)
         enc = tokenizer(
             texts,
@@ -620,31 +674,79 @@ def main() -> None:
             return_tensors="pt",
         )
         enc["labels"] = labels
+        
+        # Process images
+        if image_processor is not None:
+            import PIL.Image
+            images = []
+            image_masks = []
+            for x in batch:
+                img_path = str(x.get("image_path", ""))
+                if img_path and os.path.exists(img_path):
+                    try:
+                        img = PIL.Image.open(img_path).convert("RGB")
+                        images.append(img)
+                        image_masks.append(True)
+                    except Exception:
+                        images.append(PIL.Image.new("RGB", (224, 224)))
+                        image_masks.append(False)
+                else:
+                    images.append(PIL.Image.new("RGB", (224, 224)))
+                    image_masks.append(False)
+            img_enc = image_processor(images=images, return_tensors="pt")
+            enc["pixel_values"] = img_enc["pixel_values"]
+            enc["image_mask"] = torch.tensor(image_masks, dtype=torch.bool)
+            
+        # Process audio
+        if audio_processor is not None:
+            import torchaudio
+            audios = []
+            audio_masks = []
+            for x in batch:
+                aud_path = str(x.get("audio_path", ""))
+                if aud_path and os.path.exists(aud_path):
+                    try:
+                        waveform, sample_rate = torchaudio.load(aud_path)
+                        if sample_rate != audio_processor.sampling_rate:
+                            resampler = torchaudio.transforms.Resample(sample_rate, audio_processor.sampling_rate)
+                            waveform = resampler(waveform)
+                        audios.append(waveform[0].numpy())
+                        audio_masks.append(True)
+                    except Exception:
+                        audios.append(torch.zeros(16000).numpy())
+                        audio_masks.append(False)
+                else:
+                    audios.append(torch.zeros(16000).numpy())
+                    audio_masks.append(False)
+            aud_enc = audio_processor(audios, sampling_rate=audio_processor.sampling_rate, return_tensors="pt", padding=True)
+            enc["input_values"] = aud_enc["input_values"]
+            enc["audio_mask"] = torch.tensor(audio_masks, dtype=torch.bool)
+
         return enc
 
-    train_ds = TextLabelDataset(train_items_all)
+    train_ds = MultimodalDataset(train_items_all)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate)
     dev_loaders: Dict[str, DataLoader] = {}
     for ds_name, ds_dev in dev_items_by_dataset.items():
-        dev_ds = TextLabelDataset(ds_dev)
+        dev_ds = MultimodalDataset(ds_dev)
         dev_loaders[ds_name] = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate)
 
     lora_params: List[torch.nn.Parameter] = []
     head_params: List[torch.nn.Parameter] = []
     norm_params: List[torch.nn.Parameter] = []
     other_params: List[torch.nn.Parameter] = []
-    for name, p in backbone.named_parameters():
+    
+    for name, p in classifier.named_parameters():
         if not p.requires_grad:
             continue
         if name.endswith(".lora_A") or name.endswith(".lora_B"):
             lora_params.append(p)
-        elif ".norm." in name or name.startswith("norm_f.") or ".norm_f." in name:
+        elif "head." in name or "blank_" in name:
+            head_params.append(p)
+        elif ".norm." in name or name.startswith("text_backbone.norm_f.") or ".norm_f." in name:
             norm_params.append(p)
         else:
             other_params.append(p)
-    for p in head.parameters():
-        if p.requires_grad:
-            head_params.append(p)
 
     param_groups: List[Dict[str, object]] = []
     if lora_params:
@@ -722,18 +824,34 @@ def main() -> None:
     best_head_state = None
     best_metrics: Dict[str, object] = {}
 
-    def forward_logits(input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
+    def forward_logits(
+        input_ids: torch.Tensor, 
+        attention_mask: torch.Tensor | None,
+        pixel_values: torch.Tensor | None = None,
+        image_mask: torch.Tensor | None = None,
+        input_values: torch.Tensor | None = None,
+        audio_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if args.lora_enable:
-            outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
-            last_hidden_state = outputs["last_hidden_state"]
-            pooled = masked_mean_pool(last_hidden_state, outputs.get("attention_mask", attention_mask))
-            return head(pooled)
+            outputs = classifier(
+                input_ids=input_ids, 
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_mask=image_mask,
+                input_values=input_values,
+                audio_mask=audio_mask,
+            )
+            return outputs.logits
         with torch.no_grad():
-            outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
-            last_hidden_state = outputs["last_hidden_state"]
-            pooled = masked_mean_pool(last_hidden_state, outputs.get("attention_mask", attention_mask))
-        pooled = pooled.detach()
-        return head(pooled)
+            outputs = classifier(
+                input_ids=input_ids, 
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_mask=image_mask,
+                input_values=input_values,
+                audio_mask=audio_mask,
+            )
+        return outputs.logits
 
     try:
         for epoch in range(1, args.epochs + 1):
@@ -770,8 +888,29 @@ def main() -> None:
                     attention_mask = attention_mask.to(device)
                 labels = batch["labels"].to(device)
 
+                pixel_values = batch.get("pixel_values", None)
+                if pixel_values is not None:
+                    pixel_values = pixel_values.to(device)
+                image_mask = batch.get("image_mask", None)
+                if image_mask is not None:
+                    image_mask = image_mask.to(device)
+                    
+                input_values = batch.get("input_values", None)
+                if input_values is not None:
+                    input_values = input_values.to(device)
+                audio_mask = batch.get("audio_mask", None)
+                if audio_mask is not None:
+                    audio_mask = audio_mask.to(device)
+
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                    logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
+                    logits = forward_logits(
+                        input_ids=input_ids, 
+                        attention_mask=attention_mask,
+                        pixel_values=pixel_values,
+                        image_mask=image_mask,
+                        input_values=input_values,
+                        audio_mask=audio_mask,
+                    )
                     if loss_name == "focal":
                         loss = focal_loss(
                             logits,
@@ -903,8 +1042,30 @@ def main() -> None:
                         if attention_mask is not None:
                             attention_mask = attention_mask.to(device)
                         labels = batch["labels"].to(device)
+
+                        pixel_values = batch.get("pixel_values", None)
+                        if pixel_values is not None:
+                            pixel_values = pixel_values.to(device)
+                        image_mask = batch.get("image_mask", None)
+                        if image_mask is not None:
+                            image_mask = image_mask.to(device)
+                            
+                        input_values = batch.get("input_values", None)
+                        if input_values is not None:
+                            input_values = input_values.to(device)
+                        audio_mask = batch.get("audio_mask", None)
+                        if audio_mask is not None:
+                            audio_mask = audio_mask.to(device)
+
                         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                            logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
+                            logits = forward_logits(
+                                input_ids=input_ids, 
+                                attention_mask=attention_mask,
+                                pixel_values=pixel_values,
+                                image_mask=image_mask,
+                                input_values=input_values,
+                                audio_mask=audio_mask,
+                            )
                             pred = logits.argmax(dim=-1)
                         all_pred.append(pred.detach().cpu())
                         all_gold.append(labels.detach().cpu())
@@ -1013,12 +1174,16 @@ def main() -> None:
                 best_metrics = dict(epoch_metrics)
                 best_metrics["best_metric"] = "avg_sum"
                 best_metrics["best_score"] = float(score)
+                best_classifier_state = classifier.trainable_state_dict()
                 best_head_state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
                 ckpt = {
                     "head": best_head_state,
+                    "classifier_state": best_classifier_state,
                     "config": asdict(backbone.config),
                     "tokenizer_name_or_path": args.tokenizer_name_or_path,
                     "max_length": args.max_length,
+                    "vit_name_or_path": args.vit_name_or_path,
+                    "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
                 }
                 if lora_cfg is not None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
@@ -1048,7 +1213,13 @@ def main() -> None:
             "head_hidden_dim": args.head_hidden_dim,
             "dropout": args.dropout,
             "num_labels": 2,
+            "vit_name_or_path": args.vit_name_or_path,
+            "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
         }
+        if classifier.blank_image is not None:
+            full_ckpt["blank_image"] = classifier.blank_image.data.detach().cpu()
+        if classifier.blank_audio is not None:
+            full_ckpt["blank_audio"] = classifier.blank_audio.data.detach().cpu()
         torch.save(full_ckpt, save_dir / "full_model.pt")
 
     (save_dir / "benchmark_summary.json").write_text(

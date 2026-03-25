@@ -10,7 +10,7 @@ import torch
 
 from mamba_ssm.models.lora import LoRAConfig, inject_lora, load_lora_state_dict
 from mamba_ssm.models.mamba2_backbone import Mamba2Backbone, Mamba2BackboneConfig
-from mamba_ssm.models.offensive_classifier import FrozenBackboneClassifier, MLPHead
+from mamba_ssm.models.offensive_classifier import FrozenBackboneClassifier, MLPHead, MultimodalClassifier
 from train.sentencepiece_tokenizer import SentencePieceTokenizer, SentencePieceTokenizerConfig
 
 
@@ -51,12 +51,62 @@ def _extract_calibrated_threshold(metrics: Dict[str, Any], *, dataset: str) -> O
     return None
 
 
-def _maybe_load_transformers_tokenizer(name_or_path: str):
+def _maybe_load_transformers_tokenizer(name_or_path: str, cache_dir: str = None):
     try:
-        from transformers import AutoTokenizer  # type: ignore
+        from transformers import AutoTokenizer
+        try:
+            tok = AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir, local_files_only=True)
+        except Exception:
+            tok = AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir)
+            
+        if tok.pad_token is None:
+            if tok.eos_token is not None:
+                tok.pad_token = tok.eos_token
+            else:
+                tok.add_special_tokens({'pad_token': '[PAD]'})
+        return tok
     except Exception as e:
-        raise RuntimeError("缺少依赖 transformers，无法加载 tokenizer_name_or_path。") from e
-    return AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True)
+        raise RuntimeError("缺少依赖 transformers，或者无法加载 tokenizer。") from e
+    try:
+        from transformers import AutoTokenizer
+        try:
+            tok = AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir, local_files_only=True)
+        except Exception:
+            tok = AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir)
+            
+        if tok.pad_token is None:
+            if tok.eos_token is not None:
+                tok.pad_token = tok.eos_token
+            else:
+                tok.add_special_tokens({'pad_token': '[PAD]'})
+        return tok
+    except Exception as e:
+        raise RuntimeError("缺少依赖 transformers，或者无法加载 tokenizer。") from e
+    try:
+        from transformers import AutoTokenizer
+        try:
+            tok = AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir, local_files_only=True)
+        except Exception:
+            tok = AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir)
+            
+        if tok.pad_token is None:
+            if tok.eos_token is not None:
+                tok.pad_token = tok.eos_token
+            else:
+                tok.add_special_tokens({'pad_token': '[PAD]'})
+        return tok
+    except Exception as e:
+        raise RuntimeError("缺少依赖 transformers，或者无法加载 tokenizer。") from e
+    try:
+        from transformers import AutoTokenizer
+        try:
+            return AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir, local_files_only=True)
+        except Exception:
+            return AutoTokenizer.from_pretrained(str(name_or_path), use_fast=True, cache_dir=cache_dir)
+    except Exception as e:
+        raise RuntimeError("缺少依赖 transformers，或者无法加载 tokenizer。") from e
+
+
 
 
 def _infer_head_hidden_dim(head_state: Dict[str, torch.Tensor]) -> int:
@@ -102,8 +152,10 @@ class OffensivePredictor:
     def __init__(
         self,
         *,
-        model: FrozenBackboneClassifier,
+        model: torch.nn.Module,
         tokenizer: object,
+        image_processor: Optional[object],
+        audio_processor: Optional[object],
         max_length: int,
         device: torch.device,
         dtype: torch.dtype,
@@ -111,6 +163,8 @@ class OffensivePredictor:
     ):
         self.model = model
         self.tokenizer = tokenizer
+        self.image_processor = image_processor
+        self.audio_processor = audio_processor
         self.max_length = int(max_length)
         self.device = device
         self.dtype = dtype
@@ -136,20 +190,93 @@ class OffensivePredictor:
         )
         return {"input_ids": enc["input_ids"], "attention_mask": enc.get("attention_mask", None)}
 
-    @torch.no_grad()
-    def predict_proba(self, texts: List[str], *, batch_size: int = 8) -> List[float]:
+    def predict_proba(self, texts: List[str], images: List[Optional[str]] = None, audios: List[Optional[str]] = None, *, batch_size: int = 8) -> List[float]:
         if not texts:
             return []
+        if images is None:
+            images = [None] * len(texts)
+        if audios is None:
+            audios = [None] * len(texts)
+            
         self.model.eval()
         out: List[float] = []
         for i in range(0, len(texts), int(batch_size)):
-            chunk = texts[i : i + int(batch_size)]
-            enc = self._encode(chunk)
-            input_ids = enc["input_ids"].to(self.device)
+            chunk_texts = texts[i : i + int(batch_size)]
+            chunk_images = images[i : i + int(batch_size)]
+            chunk_audios = audios[i : i + int(batch_size)]
+            
+            enc = self._encode(chunk_texts)
+            input_ids = enc["input_ids"].to(self.device, dtype=torch.long)
+            # 解决完全没有输入文字导致序列长度为0，从而mamba backbone使用 Conv1D 崩溃的问题
+            if input_ids.shape[1] == 0:
+                # 填充一个PAD符号（如果是gpt2则默认填充eos_token的id)，以保证文本轴的存在
+                pad_id = self.tokenizer.pad_token_id if hasattr(self.tokenizer, "pad_token_id") and self.tokenizer.pad_token_id is not None else 0
+                input_ids = torch.full((input_ids.shape[0], 1), pad_id, dtype=torch.long, device=self.device)
+                
             attention_mask = enc.get("attention_mask", None)
             if isinstance(attention_mask, torch.Tensor):
                 attention_mask = attention_mask.to(self.device)
-            logits = self.model(input_ids=input_ids, attention_mask=attention_mask).logits
+                if attention_mask.shape[1] == 0:
+                     attention_mask = torch.ones((attention_mask.shape[0], 1), dtype=torch.long, device=self.device)
+                
+            pixel_values = None
+            image_mask = None
+            if self.image_processor is not None:
+                import PIL.Image
+                imgs = []
+                masks = []
+                for img_path in chunk_images:
+                    if img_path and Path(img_path).exists():
+                        try:
+                            imgs.append(PIL.Image.open(img_path).convert("RGB"))
+                            masks.append(True)
+                        except:
+                            imgs.append(PIL.Image.new("RGB", (224, 224)))
+                            masks.append(False)
+                    else:
+                        imgs.append(PIL.Image.new("RGB", (224, 224)))
+                        masks.append(False)
+                img_enc = self.image_processor(images=imgs, return_tensors="pt")
+                pixel_values = img_enc["pixel_values"].to(self.device, dtype=self.dtype)
+                image_mask = torch.tensor(masks, dtype=torch.bool).to(self.device)
+                
+            input_values = None
+            audio_mask = None
+            if self.audio_processor is not None:
+                import torchaudio
+                auds = []
+                masks = []
+                for aud_path in chunk_audios:
+                    if aud_path and Path(aud_path).exists():
+                        try:
+                            waveform, sr = torchaudio.load(aud_path)
+                            if sr != self.audio_processor.sampling_rate:
+                                resampler = torchaudio.transforms.Resample(sr, self.audio_processor.sampling_rate)
+                                waveform = resampler(waveform)
+                            auds.append(waveform[0].numpy())
+                            masks.append(True)
+                        except:
+                            auds.append(torch.zeros(16000).numpy())
+                            masks.append(False)
+                    else:
+                        auds.append(torch.zeros(16000).numpy())
+                        masks.append(False)
+                aud_enc = self.audio_processor(auds, sampling_rate=self.audio_processor.sampling_rate, return_tensors="pt", padding=True)
+                input_values = aud_enc["input_values"].to(self.device, dtype=self.dtype)
+                audio_mask = torch.tensor(masks, dtype=torch.bool).to(self.device)
+
+            if isinstance(self.model, MultimodalClassifier):
+                logits = self.model(
+                    input_ids=input_ids, 
+                    attention_mask=attention_mask,
+                    pixel_values=pixel_values,
+                    image_mask=image_mask,
+                    input_values=input_values,
+                    audio_mask=audio_mask
+                ).logits
+            else:
+                logits = self.model(input_ids=input_ids, attention_mask=attention_mask).logits
+                
             probs = torch.softmax(logits, dim=-1)[:, 1].to(torch.float32).detach().cpu().tolist()
             out.extend(float(x) for x in probs)
         return out
@@ -157,6 +284,8 @@ class OffensivePredictor:
     def predict(
         self,
         texts: List[str],
+        images: List[Optional[str]] = None,
+        audios: List[Optional[str]] = None,
         *,
         threshold_mode: str = "calibrated",
         threshold: float = 0.5,
@@ -164,7 +293,7 @@ class OffensivePredictor:
         batch_size: int = 8,
     ) -> PredictResult:
         t0 = time.time()
-        p = self.predict_proba(texts, batch_size=batch_size)
+        p = self.predict_proba(texts, images=images, audios=audios, batch_size=batch_size)
         mode = str(threshold_mode).strip().lower()
         thr = float(threshold)
         if mode in {"calibrated", "cal"}:
@@ -210,21 +339,78 @@ def load_offensive_predictor(
 
         head_state = ckpt["head"]
         hidden_dim = _infer_head_hidden_dim(head_state)
-        head = MLPHead(d_model=int(config_dict["d_model"]), hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
-        head.load_state_dict(head_state, strict=True)
-        head.eval()
-
         tok = None
         max_length = int(ckpt.get("max_length", 256))
         if "tokenizer_model_path" in ckpt:
             tok_cfg = SentencePieceTokenizerConfig(model_file=str(ckpt["tokenizer_model_path"]))
             tok = SentencePieceTokenizer(tok_cfg)
         else:
-            tok = _maybe_load_transformers_tokenizer(str(ckpt["tokenizer_name_or_path"]))
+            tok_path = str(ckpt["tokenizer_name_or_path"])
+            p_tok = Path(tok_path)
+            if not p_tok.is_absolute():
+                if not p_tok.exists():
+                    p_tok = (run_path.parent.parent / p_tok).resolve()
+            if p_tok.exists():
+                tok_path = str(p_tok)
+            tok = _maybe_load_transformers_tokenizer(tok_path, cache_dir=str((run_path.parent.parent / "predict/gpt2").resolve()))
 
-        model = FrozenBackboneClassifier(backbone=backbone, head=head).to(dev)
+        if "classifier_state" in ckpt:
+            from transformers import ViTModel, Wav2Vec2Model, AutoImageProcessor, Wav2Vec2FeatureExtractor
+            
+            image_backbone = None
+            audio_backbone = None
+            image_processor = None
+            audio_processor = None
+            
+            if ckpt.get("vit_name_or_path"):
+                image_processor = AutoImageProcessor.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True)
+                image_backbone = ViTModel.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
+                image_backbone.eval()
+                
+            if ckpt.get("wav2vec2_name_or_path"):
+                audio_processor = Wav2Vec2FeatureExtractor.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True)
+                audio_backbone = Wav2Vec2Model.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
+                audio_backbone.eval()
+
+            fusion_dim = config_dict["d_model"]
+            if image_backbone is not None:
+                fusion_dim += 768
+            if audio_backbone is not None:
+                fusion_dim += 768
+                
+            head = MLPHead(d_model=fusion_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+            head.load_state_dict(head_state, strict=True)
+            head.eval()
+
+            model = MultimodalClassifier(
+                text_backbone=backbone,
+                head=head,
+                image_backbone=image_backbone,
+                audio_backbone=audio_backbone,
+                text_dim=config_dict["d_model"],
+                image_dim=768,
+                audio_dim=768
+            ).to(dev, dtype=dt)
+            model.load_state_dict(ckpt["classifier_state"], strict=False)
+        else:
+            image_processor = None
+            audio_processor = None
+            head = MLPHead(d_model=int(config_dict["d_model"]), hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+            head.load_state_dict(head_state, strict=True)
+            head.eval()
+            model = FrozenBackboneClassifier(backbone=backbone, head=head).to(dev, dtype=dt)
+
         model.eval()
-        return OffensivePredictor(model=model, tokenizer=tok, max_length=max_length, device=dev, dtype=dt, calibrated_threshold=calibrated_thr)
+        return OffensivePredictor(
+            model=model, 
+            tokenizer=tok, 
+            image_processor=image_processor,
+            audio_processor=audio_processor,
+            max_length=max_length, 
+            device=dev, 
+            dtype=dt, 
+            calibrated_threshold=calibrated_thr
+        )
 
     best_head = run_path / "best_head.pt"
     if not best_head.exists():
@@ -235,13 +421,22 @@ def load_offensive_predictor(
     resolved_pretrained = None
     txt = run_path / "backbone_converted_dir.txt"
     if txt.exists():
-        resolved_pretrained = Path(txt.read_text(encoding="utf-8").strip()).expanduser()
+        resolved_pretrained = Path(txt.read_text(encoding="utf-8").strip()).expanduser(); print("DEBUG pre:", resolved_pretrained, "exists:", resolved_pretrained.exists(), "cwd:", __import__("os").getcwd()); print("DEBUG pre:", resolved_pretrained, "exists:", resolved_pretrained.exists(), "cwd:", __import__("os").getcwd())
     if pretrained_dir is not None:
         resolved_pretrained = Path(pretrained_dir).expanduser()
     if resolved_pretrained is None:
         raise RuntimeError("未找到 backbone 权重目录：缺少 backbone_converted_dir.txt 且未显式传入 pretrained_dir。")
     if not resolved_pretrained.is_absolute():
-        resolved_pretrained = (run_path.parent / resolved_pretrained).resolve()
+        if not resolved_pretrained.exists():
+            # Fallback to resolving relative to the project root, assuming run_path is in `runs/xx`
+            # Try resolving from cwd
+            if Path(resolved_pretrained).exists():
+                resolved_pretrained = Path(resolved_pretrained).resolve()
+            else:
+                resolved_pretrained = (run_path.parent.parent / resolved_pretrained).resolve()
+            print("DEBUG pre modified:", resolved_pretrained)
+        else:
+            resolved_pretrained = resolved_pretrained.resolve()
 
     backbone, _ = Mamba2Backbone.load_pretrained(resolved_pretrained, device=dev, dtype=dt, strict=False)
     backbone = backbone.to(dev)
@@ -264,18 +459,75 @@ def load_offensive_predictor(
 
     head_state = ckpt["head"]
     hidden_dim = _infer_head_hidden_dim(head_state)
-    head = MLPHead(d_model=int(config_dict["d_model"]), hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
-    head.load_state_dict(head_state, strict=True)
-    head.eval()
-
-    max_length = int(ckpt.get("max_length", 256))
     tok = None
+    max_length = int(ckpt.get("max_length", 256))
     if "tokenizer_model_path" in ckpt:
         tok_cfg = SentencePieceTokenizerConfig(model_file=str(ckpt["tokenizer_model_path"]))
         tok = SentencePieceTokenizer(tok_cfg)
     else:
-        tok = _maybe_load_transformers_tokenizer(str(ckpt["tokenizer_name_or_path"]))
+        tok_path = str(ckpt["tokenizer_name_or_path"])
+        p_tok = Path(tok_path)
+        if not p_tok.is_absolute():
+            if not p_tok.exists():
+                p_tok = (run_path.parent.parent / p_tok).resolve()
+        if p_tok.exists():
+            tok_path = str(p_tok)
+        tok = _maybe_load_transformers_tokenizer(tok_path, cache_dir=str((run_path.parent.parent / "predict/gpt2").resolve()))
 
-    model = FrozenBackboneClassifier(backbone=backbone, head=head).to(dev)
+    if "classifier_state" in ckpt:
+        from transformers import ViTModel, Wav2Vec2Model, AutoImageProcessor, Wav2Vec2FeatureExtractor
+        
+        image_backbone = None
+        audio_backbone = None
+        image_processor = None
+        audio_processor = None
+        
+        if ckpt.get("vit_name_or_path"):
+            image_processor = AutoImageProcessor.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True)
+            image_backbone = ViTModel.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
+            image_backbone.eval()
+            
+        if ckpt.get("wav2vec2_name_or_path"):
+            audio_processor = Wav2Vec2FeatureExtractor.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True)
+            audio_backbone = Wav2Vec2Model.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
+            audio_backbone.eval()
+
+        fusion_dim = config_dict["d_model"]
+        if image_backbone is not None:
+            fusion_dim += 768
+        if audio_backbone is not None:
+            fusion_dim += 768
+            
+        head = MLPHead(d_model=fusion_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+        head.load_state_dict(head_state, strict=True)
+        head.eval()
+
+        model = MultimodalClassifier(
+            text_backbone=backbone,
+            head=head,
+            image_backbone=image_backbone,
+            audio_backbone=audio_backbone,
+            text_dim=config_dict["d_model"],
+            image_dim=768,
+            audio_dim=768
+        ).to(dev, dtype=dt)
+        model.load_state_dict(ckpt["classifier_state"], strict=False)
+    else:
+        image_processor = None
+        audio_processor = None
+        head = MLPHead(d_model=int(config_dict["d_model"]), hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+        head.load_state_dict(head_state, strict=True)
+        head.eval()
+        model = FrozenBackboneClassifier(backbone=backbone, head=head).to(dev, dtype=dt)
+
     model.eval()
-    return OffensivePredictor(model=model, tokenizer=tok, max_length=max_length, device=dev, dtype=dt, calibrated_threshold=calibrated_thr)
+    return OffensivePredictor(
+        model=model, 
+        tokenizer=tok, 
+        image_processor=image_processor,
+        audio_processor=audio_processor,
+        max_length=max_length, 
+        device=dev, 
+        dtype=dt, 
+        calibrated_threshold=calibrated_thr
+    )
