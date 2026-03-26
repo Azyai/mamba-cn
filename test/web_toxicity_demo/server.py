@@ -199,7 +199,8 @@ def make_handler(app: App):
                             
                     if aud_file and app.asr is not None:
                         try:
-                            result = app.asr.transcribe(aud_file)
+                            # 明确指定语音识别的语言为中文
+                            result = app.asr.transcribe(aud_file, language="zh")
                             asr_text = result.get("text", "")
                             if asr_text:
                                 asr_texts_list[i] = asr_text
