@@ -34,12 +34,13 @@ class App:
         self.pretrained_dir = str(pretrained_dir) if pretrained_dir is not None else None
 
         # Load external reasoning tools on CPU or Device to help inference
+        # Use easyocr instead of PaddleOCR due to paddle segfault issues
         try:
-            from paddleocr import PaddleOCR
-            self.ocr = PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=(self.device=="cuda"))
+            import easyocr
+            self.ocr = easyocr.Reader(['ch_sim', 'en'], gpu=(self.device=="cuda"))
         except ImportError:
             self.ocr = None
-            print("PaddleOCR is not installed, ignoring OCR.")
+            print("easyocr is not installed, ignoring OCR.")
 
         try:
             import whisper
@@ -178,6 +179,8 @@ def make_handler(app: App):
                 audios_list = [audio_path] + [None] * (num_inferences - 1) if audio_path else [None] * num_inferences
                 
                 # Apply OCR & ASR processing as textual supplements during inference time
+                ocr_texts_list = [""] * num_inferences
+                asr_texts_list = [""] * num_inferences
                 for i in range(num_inferences):
                     img_file = images_list[i]
                     aud_file = audios_list[i]
@@ -185,10 +188,12 @@ def make_handler(app: App):
                     
                     if img_file and app.ocr is not None:
                         try:
-                            result = app.ocr.ocr(img_file, cls=True)
-                            ocr_texts = [line[1][0] for res in result[0] if res is not None and result[0] is not None]
+                            result = app.ocr.readtext(img_file)
+                            ocr_texts = [res[1] for res in result]
                             if ocr_texts:
-                                extra_text += "。图片包含文字：" + " ".join(ocr_texts)
+                                extracted_ocr = " ".join(ocr_texts)
+                                ocr_texts_list[i] = extracted_ocr
+                                extra_text += "。图片包含文字：" + extracted_ocr
                         except Exception as e:
                             print(f"OCR Error: {e}")
                             
@@ -197,6 +202,7 @@ def make_handler(app: App):
                             result = app.asr.transcribe(aud_file)
                             asr_text = result.get("text", "")
                             if asr_text:
+                                asr_texts_list[i] = asr_text
                                 extra_text += "。音频包含文字：" + asr_text
                         except Exception as e:
                             print(f"ASR Error: {e}")
@@ -221,7 +227,9 @@ def make_handler(app: App):
                         "label": y,
                         "has_text": bool(t.strip()),
                         "has_image": bool(images_list[i]),
-                        "has_audio": bool(audios_list[i])
+                        "has_audio": bool(audios_list[i]),
+                        "ocr_text": ocr_texts_list[i],
+                        "asr_text": asr_texts_list[i]
                     })
                 
                 out: Dict[str, Any] = {

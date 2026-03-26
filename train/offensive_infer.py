@@ -415,7 +415,7 @@ def load_offensive_predictor(
     best_head = run_path / "best_head.pt"
     if not best_head.exists():
         raise FileNotFoundError(f"run_dir 下缺少 best_head.pt: {best_head}")
-    ckpt = torch.load(str(best_head), map_location="cpu")
+    ckpt = torch.load(str(best_head), map_location="cpu", weights_only=False)
     config_dict = dict(ckpt["config"])
 
     resolved_pretrained = None

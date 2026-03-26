@@ -22,7 +22,7 @@ pip install "mamba-ssm[causal-conv1d]"
 pip install pillow
 
 # (可选) Web端动态OCR和ASR所需依赖(仅在运行 web_toxicity_demo 时需要)
-pip install paddleocr paddlepaddle-gpu openai-whisper
+pip install paddleocr paddlepaddle-gpu openai-whisper -i https://mirrors.aliyun.com/pypi/simple/
 # Linux 系统可能还需要安装 ffmpeg 以支持 whisper 音频解析
 # sudo apt-get install ffmpeg
 

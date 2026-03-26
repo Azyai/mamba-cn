@@ -383,8 +383,14 @@
               
               let modalities = [];
               if (r.has_text) modalities.push("文本");
-              if (r.has_image) modalities.push("图片");
-              if (r.has_audio) modalities.push("音频");
+              if (r.has_image) {
+                let imgText = r.ocr_text ? ` <span style="font-size:12px;color:var(--muted);">(OCR识别: ${esc(r.ocr_text)})</span>` : "";
+                modalities.push("图片" + imgText);
+              }
+              if (r.has_audio) {
+                let audText = r.asr_text ? ` <span style="font-size:12px;color:var(--muted);">(语音识别: ${esc(r.asr_text)})</span>` : "";
+                modalities.push("音频" + audText);
+              }
               let displayContent = modalities.join(" + ");
               if (r.has_text) displayContent += `<br/><span style="color:var(--muted);font-size:12px;">"${esc(r.text)}"</span>`;
 
