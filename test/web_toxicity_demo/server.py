@@ -44,7 +44,8 @@ class App:
 
         try:
             import whisper
-            self.asr = whisper.load_model("base", device=self.device)
+            # 升级为更大的 small 或 medium 模型，由于中文表现 base 较差
+            self.asr = whisper.load_model("small", device=self.device)
         except ImportError:
             self.asr = None
             print("Whisper is not installed, ignoring ASR.")
@@ -199,8 +200,8 @@ def make_handler(app: App):
                             
                     if aud_file and app.asr is not None:
                         try:
-                            # 明确指定语音识别的语言为中文
-                            result = app.asr.transcribe(aud_file, language="zh")
+                            # 明确指定语音识别的语言为中文，并增加提示词约束输出纯简体中文
+                            result = app.asr.transcribe(aud_file, language="zh", initial_prompt="这是一段中文语音，请全部识别为简体中文。")
                             asr_text = result.get("text", "")
                             if asr_text:
                                 asr_texts_list[i] = asr_text
