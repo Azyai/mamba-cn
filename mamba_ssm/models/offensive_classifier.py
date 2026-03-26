@@ -48,21 +48,6 @@ class FrozenBackboneClassifier(nn.Module):
         self.backbone = backbone
         self.adapter = adapter
         self.head = head
-        
-        # 降维投影层
-        self.image_proj = nn.Linear(image_dim, text_dim) if image_backbone else None
-        self.audio_proj = nn.Linear(audio_dim, text_dim) if audio_backbone else None
-        
-        fusion_dim = text_dim
-        if image_backbone: fusion_dim += text_dim
-        if audio_backbone: fusion_dim += text_dim
-        
-        # 门控机制：抑制噪声特征
-        self.gate = nn.Sequential(
-            nn.Linear(fusion_dim, text_dim),
-            nn.Sigmoid()
-        )
-
 
     @torch.no_grad()
     def freeze_backbone_(self) -> "FrozenBackboneClassifier":
@@ -115,6 +100,20 @@ class MultimodalClassifier(nn.Module):
             nn.init.normal_(self.blank_image, std=0.02)
         if self.blank_audio is not None:
             nn.init.normal_(self.blank_audio, std=0.02)
+
+        # 降维投影层
+        self.image_proj = nn.Linear(image_dim, text_dim) if image_backbone else None
+        self.audio_proj = nn.Linear(audio_dim, text_dim) if audio_backbone else None
+        
+        fusion_dim = text_dim
+        if image_backbone: fusion_dim += text_dim
+        if audio_backbone: fusion_dim += text_dim
+        
+        # 门控机制：抑制噪声特征
+        self.gate = nn.Sequential(
+            nn.Linear(fusion_dim, text_dim),
+            nn.Sigmoid()
+        )
 
     @torch.no_grad()
     def freeze_backbones_(self) -> "MultimodalClassifier":
