@@ -172,17 +172,23 @@
           <textarea id="input" placeholder="输入文本。例如：&#10;这是一条正常文本\\, 你这个傻X"></textarea>
           
           <div style="display: flex; gap: 12px; margin-top: 8px;">
-            <label style="flex: 1; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); cursor: pointer;">
-              <span style="display:inline-block; width:80px; font-weight:bold;">图片上传:</span> 
-              <input type="file" id="imageUpload" accept="image/*" />
-              <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法图片，禁止假后缀名)</div>
-            </label>
+            <div style="flex: 1; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); position: relative;">
+              <label style="cursor: pointer; display: block;">
+                <span style="display:inline-block; width:80px; font-weight:bold;">图片上传:</span> 
+                <input type="file" id="imageUpload" accept="image/*" />
+                <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法图片，禁止假后缀名)</div>
+              </label>
+              <button id="clearImage" class="btn" style="position: absolute; right: 12px; top: 12px; padding: 4px 10px; font-size: 12px; display: none; background: rgba(255,59,48,0.1); color: var(--red); border-color: rgba(255,59,48,0.2);">删除</button>
+            </div>
             
-            <label style="flex: 1; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); cursor: pointer;">
-              <span style="display:inline-block; width:80px; font-weight:bold;">音频上传:</span> 
-              <input type="file" id="audioUpload" accept="audio/*" />
-              <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法音频，如 .wav / .mp3)</div>
-            </label>
+            <div style="flex: 1; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; background: var(--card2); position: relative;">
+              <label style="cursor: pointer; display: block;">
+                <span style="display:inline-block; width:80px; font-weight:bold;">音频上传:</span> 
+                <input type="file" id="audioUpload" accept="audio/*" />
+                <div style="font-size: 11px; margin-top: 4px; color: var(--muted); margin-left: 84px;">(格式需为合法音频，如 .wav / .mp3)</div>
+              </label>
+              <button id="clearAudio" class="btn" style="position: absolute; right: 12px; top: 12px; padding: 4px 10px; font-size: 12px; display: none; background: rgba(255,59,48,0.1); color: var(--red); border-color: rgba(255,59,48,0.2);">删除</button>
+            </div>
           </div>
 
           <div class="row">
@@ -421,10 +427,36 @@
           document.getElementById("err").textContent = e && e.message ? e.message : String(e);
         });
       });
+
+      const imgInput = document.getElementById("imageUpload");
+      const audInput = document.getElementById("audioUpload");
+      const clearImgBtn = document.getElementById("clearImage");
+      const clearAudBtn = document.getElementById("clearAudio");
+
+      imgInput.addEventListener("change", () => {
+        clearImgBtn.style.display = imgInput.files.length > 0 ? "block" : "none";
+      });
+      clearImgBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        imgInput.value = "";
+        clearImgBtn.style.display = "none";
+      });
+
+      audInput.addEventListener("change", () => {
+        clearAudBtn.style.display = audInput.files.length > 0 ? "block" : "none";
+      });
+      clearAudBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        audInput.value = "";
+        clearAudBtn.style.display = "none";
+      });
+
       document.getElementById("clear").addEventListener("click", () => {
         document.getElementById("input").value = "";
-        document.getElementById("imageUpload").value = "";
-        document.getElementById("audioUpload").value = "";
+        imgInput.value = "";
+        audInput.value = "";
+        clearImgBtn.style.display = "none";
+        clearAudBtn.style.display = "none";
         document.getElementById("err").textContent = "";
         document.getElementById("meta").textContent = "";
         document.getElementById("tableContainer").style.display = "none";
