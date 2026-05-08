@@ -9,7 +9,7 @@ conda create -n mamba -y
 conda activate mamba
 
 # 根据你的 CUDA 版本选择合适的 pytorch/torchvision/torchaudio 组合
-conda install -c pytorch -c nvidia pytorch pytorch-cuda=12.4 torchvision torchaudio -y
+conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia -y
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
