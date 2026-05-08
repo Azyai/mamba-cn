@@ -75,6 +75,9 @@
       .row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
       .row > * { margin: 0; }
 
+      details { margin-top: 10px; }
+      details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+
       label { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
       select, input[type="number"] {
         border-radius: 12px;
@@ -163,7 +166,10 @@
     <div class="container">
       <div class="header">
         <h1>文本含毒检测</h1>
-        <div class="chip" id="statusChip">状态：初始化</div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <div class="chip" id="statusChip">状态：初始化</div>
+          <a class="btn" href="/agent">Agent 对话</a>
+        </div>
       </div>
       <div class="sub">多条文本用 <code>\,</code> 分隔；或使用换行分隔。</div>
 
@@ -190,6 +196,68 @@
               <button id="clearAudio" class="btn" style="position: absolute; right: 12px; top: 12px; padding: 4px 10px; font-size: 12px; display: none; background: rgba(255,59,48,0.1); color: var(--red); border-color: rgba(255,59,48,0.2);">删除</button>
             </div>
           </div>
+
+          <div class="row">
+            <label>
+              检测模式
+              <select id="mode">
+                <option value="baseline">baseline（仅模型）</option>
+                <option value="ocr_asr" selected>OCR/ASR（文本增强）</option>
+                <option value="ocr_asr_rag">OCR/ASR + RAG</option>
+              </select>
+            </label>
+
+            <label>
+              <input type="checkbox" id="ragEnabled" /> 启用 RAG
+            </label>
+
+            <label>
+              <input type="checkbox" id="ragAugment" checked /> 追加检索证据到模型输入
+            </label>
+          </div>
+
+          <details>
+            <summary>高级设置（检索与融合参数）</summary>
+            <div class="row">
+              <label>
+                RAG TopK
+                <input id="ragTopK" type="number" min="1" max="20" step="1" value="5" />
+              </label>
+              <label>
+                RAG MinScore
+                <input id="ragMinScore" type="number" min="0" max="1" step="0.01" value="0" />
+              </label>
+              <label>
+                RAG 上下文最大字符
+                <input id="ragContextMaxChars" type="number" min="120" max="2000" step="10" value="480" />
+              </label>
+              <label>
+                <input type="checkbox" id="ragWithRules" checked /> 规则命中参与
+              </label>
+            </div>
+            <div class="row">
+              <label>
+                Fusion 阈值
+                <input id="fusionThreshold" type="number" min="0" max="1" step="0.01" value="0.5" />
+              </label>
+              <label>
+                w_model
+                <input id="fusionModel" type="number" min="0" max="1" step="0.01" value="0.6" />
+              </label>
+              <label>
+                w_bm25
+                <input id="fusionBm25" type="number" min="0" max="1" step="0.01" value="0.2" />
+              </label>
+              <label>
+                w_vector
+                <input id="fusionVector" type="number" min="0" max="1" step="0.01" value="0.15" />
+              </label>
+              <label>
+                w_rule
+                <input id="fusionRule" type="number" min="0" max="1" step="0.01" value="0.05" />
+              </label>
+            </div>
+          </details>
 
           <div class="row">
             <label>
@@ -271,6 +339,18 @@
         document.getElementById("run").disabled = !ready;
         document.getElementById("thresholdMode").disabled = !ready;
         document.getElementById("threshold").disabled = !ready;
+        document.getElementById("mode").disabled = !ready;
+        document.getElementById("ragEnabled").disabled = !ready;
+        document.getElementById("ragAugment").disabled = !ready;
+        document.getElementById("ragTopK").disabled = !ready;
+        document.getElementById("ragMinScore").disabled = !ready;
+        document.getElementById("ragContextMaxChars").disabled = !ready;
+        document.getElementById("ragWithRules").disabled = !ready;
+        document.getElementById("fusionThreshold").disabled = !ready;
+        document.getElementById("fusionModel").disabled = !ready;
+        document.getElementById("fusionBm25").disabled = !ready;
+        document.getElementById("fusionVector").disabled = !ready;
+        document.getElementById("fusionRule").disabled = !ready;
       }
 
       async function refreshStatus() {
@@ -322,6 +402,21 @@
         const thresholdMode = document.getElementById("thresholdMode").value;
         const threshold = parseFloat(document.getElementById("threshold").value || "0.5");
 
+        const mode = document.getElementById("mode").value;
+        const ragEnabled = document.getElementById("ragEnabled").checked;
+        const ragAugment = document.getElementById("ragAugment").checked;
+        const ragTopK = parseInt(document.getElementById("ragTopK").value || "5", 10);
+        const ragMinScore = parseFloat(document.getElementById("ragMinScore").value || "0");
+        const ragContextMaxChars = parseInt(document.getElementById("ragContextMaxChars").value || "480", 10);
+        const ragWithRules = document.getElementById("ragWithRules").checked;
+        const fusionThreshold = parseFloat(document.getElementById("fusionThreshold").value || "0.5");
+        const fusion = {
+          model: parseFloat(document.getElementById("fusionModel").value || "0.6"),
+          bm25: parseFloat(document.getElementById("fusionBm25").value || "0.2"),
+          vector: parseFloat(document.getElementById("fusionVector").value || "0.15"),
+          rule: parseFloat(document.getElementById("fusionRule").value || "0.05")
+        };
+
         document.getElementById("err").textContent = "";
 
         if (texts.length === 0 && !image_b64 && !audio_b64) {
@@ -367,13 +462,34 @@
             const resp = await fetch("/api/predict", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ texts, image_b64, audio_b64, threshold_mode: thresholdMode, threshold })
+              body: JSON.stringify({
+                texts,
+                image_b64,
+                audio_b64,
+                threshold_mode: thresholdMode,
+                threshold,
+                mode,
+                rag_enabled: ragEnabled,
+                rag_augment_input: ragAugment,
+                rag_top_k: ragTopK,
+                rag_min_score: ragMinScore,
+                rag_context_max_chars: ragContextMaxChars,
+                rag_with_rules: ragWithRules,
+                fusion_threshold: fusionThreshold,
+                fusion
+              })
             });
             const data = await resp.json();
             if (!resp.ok) {
               if (resp.status === 503) await refreshStatus();
               throw new Error(data && data.error ? data.error : "请求失败");
             }
+
+            const metaParts = [];
+            if (data.mode) metaParts.push(`mode=${data.mode}`);
+            if (typeof data.rag_enabled === "boolean") metaParts.push(`rag=${data.rag_enabled ? "on" : "off"}`);
+            if (data.rag_warning) metaParts.push(data.rag_warning);
+            document.getElementById("meta").textContent = metaParts.join(" | ");
 
             // Remove global meta info since it's now in the table
             // document.getElementById("meta").textContent =
@@ -400,7 +516,8 @@
               let displayContent = modalities.join(" + ");
               if (r.has_text) displayContent += `<br/><span style="color:var(--muted);font-size:12px;">"${esc(r.text)}"</span>`;
 
-              const infoHTML = `<span style="font-size:12px;color:var(--muted)">threshold_mode=${data.threshold_mode}<br/>threshold=${Number(data.threshold).toFixed(6)}<br/>latency_ms=${Number(data.latency_ms).toFixed(1)}</span>`;
+              const fusionInfo = r.fusion_score != null ? `fusion_score=${Number(r.fusion_score).toFixed(4)}<br/>` : "";
+              const infoHTML = `<span style="font-size:12px;color:var(--muted)">threshold_mode=${data.threshold_mode}<br/>threshold=${Number(data.threshold).toFixed(6)}<br/>${fusionInfo}latency_ms=${Number(data.latency_ms).toFixed(1)}</span>`;
 
               const tr = document.getElementById(rInfo.id);
               tr.innerHTML =
@@ -432,6 +549,19 @@
       const audInput = document.getElementById("audioUpload");
       const clearImgBtn = document.getElementById("clearImage");
       const clearAudBtn = document.getElementById("clearAudio");
+      const modeSelect = document.getElementById("mode");
+      const ragToggle = document.getElementById("ragEnabled");
+
+      modeSelect.addEventListener("change", () => {
+        const mode = modeSelect.value;
+        if (mode === "baseline") {
+          ragToggle.checked = false;
+        }
+        if (mode === "ocr_asr_rag") {
+          ragToggle.checked = true;
+        }
+      });
+      modeSelect.dispatchEvent(new Event("change"));
 
       imgInput.addEventListener("change", () => {
         clearImgBtn.style.display = imgInput.files.length > 0 ? "block" : "none";
@@ -457,6 +587,18 @@
         audInput.value = "";
         clearImgBtn.style.display = "none";
         clearAudBtn.style.display = "none";
+        document.getElementById("mode").value = "ocr_asr";
+        document.getElementById("ragEnabled").checked = false;
+        document.getElementById("ragAugment").checked = true;
+        document.getElementById("ragTopK").value = "5";
+        document.getElementById("ragMinScore").value = "0";
+        document.getElementById("ragContextMaxChars").value = "480";
+        document.getElementById("ragWithRules").checked = true;
+        document.getElementById("fusionThreshold").value = "0.5";
+        document.getElementById("fusionModel").value = "0.6";
+        document.getElementById("fusionBm25").value = "0.2";
+        document.getElementById("fusionVector").value = "0.15";
+        document.getElementById("fusionRule").value = "0.05";
         document.getElementById("err").textContent = "";
         document.getElementById("meta").textContent = "";
         document.getElementById("tableContainer").style.display = "none";

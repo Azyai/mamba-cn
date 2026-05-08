@@ -35,5 +35,7 @@ setup(
     extras_require={
         "causal-conv1d": ["causal-conv1d>=1.2.0"],
         "train": ["safetensors", "sentencepiece", "transformers", "tqdm"],
+        "rag": ["jieba", "rank-bm25", "sentence-transformers", "faiss-cpu", "pyahocorasick"],
+        "agent": ["langchain-openai"],
     },
 )

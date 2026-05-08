@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Toxicity Analyst</title>
+    <style>
+      :root {
+        --bg: #f4f1ec;
+        --panel: rgba(255, 255, 255, 0.88);
+        --panel-strong: rgba(255, 255, 255, 0.96);
+        --ink: #1b1b1f;
+        --muted: rgba(27, 27, 31, 0.64);
+        --accent: #ff6a00;
+        --accent-2: #0f766e;
+        --line: rgba(0, 0, 0, 0.08);
+        --shadow: 0 22px 60px rgba(0, 0, 0, 0.12);
+        --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.08);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; min-height: 100%; }
+      body {
+        font-family: "IBM Plex Sans", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(1200px 600px at 15% 10%, rgba(255, 106, 0, 0.16), rgba(255, 106, 0, 0) 60%),
+          radial-gradient(1000px 700px at 85% 0%, rgba(15, 118, 110, 0.14), rgba(15, 118, 110, 0) 60%),
+          var(--bg);
+      }
+
+      .container {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 28px 20px 60px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .title {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .title h1 {
+        margin: 0;
+        font-size: 26px;
+        letter-spacing: -0.02em;
+      }
+
+      .title p { margin: 0; color: var(--muted); font-size: 13px; }
+
+      .btn {
+        border: 1px solid var(--line);
+        background: var(--panel-strong);
+        padding: 8px 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        box-shadow: var(--shadow-soft);
+        text-decoration: none;
+        color: var(--ink);
+        font-size: 13px;
+      }
+
+      .layout {
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        gap: 16px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 16px;
+        backdrop-filter: blur(16px);
+      }
+
+      .panel h2 {
+        font-size: 14px;
+        margin: 0 0 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+
+      .section {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      select, input[type="number"], textarea {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        padding: 8px 10px;
+        font-size: 13px;
+        background: var(--panel-strong);
+        color: var(--ink);
+      }
+
+      input[type="checkbox"] { transform: translateY(1px); }
+
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .chat {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        height: 100%;
+      }
+
+      .messages {
+        flex: 1;
+        min-height: 360px;
+        max-height: 520px;
+        overflow-y: auto;
+        display: grid;
+        gap: 12px;
+      }
+
+      .msg {
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: var(--panel-strong);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .msg.user {
+        border-color: rgba(255, 106, 0, 0.4);
+        background: rgba(255, 106, 0, 0.12);
+      }
+
+      .msg.agent {
+        border-color: rgba(15, 118, 110, 0.4);
+        background: rgba(15, 118, 110, 0.12);
+      }
+
+      .composer {
+        display: grid;
+        gap: 10px;
+      }
+
+      .composer textarea {
+        min-height: 90px;
+        resize: vertical;
+      }
+
+      .composer-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .btn.primary {
+        background: linear-gradient(150deg, rgba(255, 106, 0, 0.92), rgba(255, 146, 10, 0.92));
+        border-color: rgba(255, 106, 0, 0.35);
+        color: white;
+      }
+
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .evidence {
+        display: grid;
+        gap: 8px;
+      }
+
+      .chip {
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        font-size: 12px;
+        color: var(--muted);
+        background: var(--panel-strong);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .evidence-item {
+        border: 1px dashed var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        font-size: 12px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.6);
+      }
+
+      @media (max-width: 980px) {
+        .layout { grid-template-columns: 1fr; }
+        .messages { max-height: 420px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="topbar">
+        <div class="title">
+          <h1>Agent Toxicity Analyst</h1>
+          <p>对话式分析 + RAG 证据 + 融合判定</p>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <a class="btn" href="/">返回检测页</a>
+          <span class="chip" id="statusChip">状态：初始化</span>
+        </div>
+      </div>
+
+      <div class="layout">
+        <div class="panel">
+          <h2>Pipeline</h2>
+          <div class="section">
+            <label>
+              模式
+              <select id="mode">
+                <option value="baseline">baseline（仅模型）</option>
+                <option value="ocr_asr">OCR/ASR（文本增强）</option>
+                <option value="ocr_asr_rag" selected>OCR/ASR + RAG</option>
+              </select>
+            </label>
+            <div class="checkbox-row">
+              <input type="checkbox" id="ragEnabled" checked />
+              <span>启用 RAG</span>
+            </div>
+            <div class="checkbox-row">
+              <input type="checkbox" id="ragAugment" checked />
+              <span>追加检索证据到模型输入</span>
+            </div>
+          </div>
+
+          <h2>RAG Settings</h2>
+          <div class="section">
+            <label>
+              TopK
+              <input id="ragTopK" type="number" min="1" max="20" step="1" value="5" />
+            </label>
+            <label>
+              MinScore
+              <input id="ragMinScore" type="number" min="0" max="1" step="0.01" value="0" />
+            </label>
+            <label>
+              上下文最大字符
+              <input id="ragContextMaxChars" type="number" min="120" max="2000" step="10" value="480" />
+            </label>
+            <div class="checkbox-row">
+              <input type="checkbox" id="ragWithRules" checked />
+              <span>规则命中参与</span>
+            </div>
+          </div>
+
+          <h2>Fusion</h2>
+          <div class="section">
+            <label>
+              Fusion 阈值
+              <input id="fusionThreshold" type="number" min="0" max="1" step="0.01" value="0.5" />
+            </label>
+            <label>
+              w_model
+              <input id="fusionModel" type="number" min="0" max="1" step="0.01" value="0.6" />
+            </label>
+            <label>
+              w_bm25
+              <input id="fusionBm25" type="number" min="0" max="1" step="0.01" value="0.2" />
+            </label>
+            <label>
+              w_vector
+              <input id="fusionVector" type="number" min="0" max="1" step="0.01" value="0.15" />
+            </label>
+            <label>
+              w_rule
+              <input id="fusionRule" type="number" min="0" max="1" step="0.01" value="0.05" />
+            </label>
+          </div>
+
+          <h2>Inspector</h2>
+          <div class="section">
+            <div class="chip" id="inspectScore">model=0.000 | fusion=0.000</div>
+            <div class="chip" id="inspectLabel">label=0</div>
+            <div class="evidence" id="evidenceList"></div>
+          </div>
+        </div>
+
+        <div class="panel chat">
+          <div class="messages" id="messages"></div>
+          <div class="composer">
+            <textarea id="input" placeholder="输入需要分析的内容...\n支持文本 + 可选图片/音频"></textarea>
+            <div class="composer-row">
+              <label class="btn" style="padding:6px 10px;">
+                上传图片
+                <input id="imageUpload" type="file" accept="image/*" style="display:none;" />
+              </label>
+              <label class="btn" style="padding:6px 10px;">
+                上传音频
+                <input id="audioUpload" type="file" accept="audio/*" style="display:none;" />
+              </label>
+              <button class="btn primary" id="send">发送分析</button>
+              <button class="btn" id="clear">清空</button>
+              <span class="hint" id="hint"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function esc(s) {
+        return (s || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+      }
+
+      function addMessage(role, text) {
+        const el = document.createElement("div");
+        el.className = `msg ${role}`;
+        el.innerHTML = esc(text).replaceAll("\n", "<br/>");
+        const box = document.getElementById("messages");
+        box.appendChild(el);
+        box.scrollTop = box.scrollHeight;
+      }
+
+      function fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.readAsDataURL(file);
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = error => reject(error);
+        });
+      }
+
+      function setInspector(result) {
+        if (!result) return;
+        const modelScore = typeof result.p_toxic === "number" ? result.p_toxic : 0;
+        const fusionScore = result.fusion_score != null ? result.fusion_score : modelScore;
+        document.getElementById("inspectScore").textContent = `model=${modelScore.toFixed(4)} | fusion=${Number(fusionScore).toFixed(4)}`;
+        document.getElementById("inspectLabel").textContent = `label=${result.label}`;
+
+        const evidence = document.getElementById("evidenceList");
+        evidence.innerHTML = "";
+        if (result.rag && result.rag.hits && result.rag.hits.length) {
+          result.rag.hits.slice(0, 5).forEach(hit => {
+            const div = document.createElement("div");
+            div.className = "evidence-item";
+            div.textContent = `[${hit.doc_type}] ${hit.title}: ${hit.text_snippet}`;
+            evidence.appendChild(div);
+          });
+        } else {
+          const div = document.createElement("div");
+          div.className = "evidence-item";
+          div.textContent = "暂无检索证据";
+          evidence.appendChild(div);
+        }
+      }
+
+      async function refreshStatus() {
+        const r = await fetch("/api/status", { method: "GET" });
+        const st = await r.json();
+        const chip = document.getElementById("statusChip");
+        if (st.status === "ready") {
+          chip.textContent = "状态：就绪";
+          return true;
+        }
+        if (st.status === "error") {
+          chip.textContent = "状态：加载失败";
+          return false;
+        }
+        chip.textContent = "状态：加载中";
+        return null;
+      }
+
+      async function sendMessage() {
+        const input = document.getElementById("input");
+        const message = input.value.trim();
+        if (!message) {
+          document.getElementById("hint").textContent = "请输入文本内容";
+          return;
+        }
+        document.getElementById("hint").textContent = "";
+        addMessage("user", message);
+        input.value = "";
+
+        const imgFile = document.getElementById("imageUpload").files[0];
+        const audFile = document.getElementById("audioUpload").files[0];
+        const image_b64 = imgFile ? await fileToBase64(imgFile) : "";
+        const audio_b64 = audFile ? await fileToBase64(audFile) : "";
+
+        const mode = document.getElementById("mode").value;
+        const ragEnabled = document.getElementById("ragEnabled").checked;
+        const ragAugment = document.getElementById("ragAugment").checked;
+        const ragTopK = parseInt(document.getElementById("ragTopK").value || "5", 10);
+        const ragMinScore = parseFloat(document.getElementById("ragMinScore").value || "0");
+        const ragContextMaxChars = parseInt(document.getElementById("ragContextMaxChars").value || "480", 10);
+        const ragWithRules = document.getElementById("ragWithRules").checked;
+        const fusionThreshold = parseFloat(document.getElementById("fusionThreshold").value || "0.5");
+        const fusion = {
+          model: parseFloat(document.getElementById("fusionModel").value || "0.6"),
+          bm25: parseFloat(document.getElementById("fusionBm25").value || "0.2"),
+          vector: parseFloat(document.getElementById("fusionVector").value || "0.15"),
+          rule: parseFloat(document.getElementById("fusionRule").value || "0.05")
+        };
+
+        const payload = {
+          message,
+          image_b64,
+          audio_b64,
+          mode,
+          rag_enabled: ragEnabled,
+          rag_augment_input: ragAugment,
+          rag_top_k: ragTopK,
+          rag_min_score: ragMinScore,
+          rag_context_max_chars: ragContextMaxChars,
+          rag_with_rules: ragWithRules,
+          fusion_threshold: fusionThreshold,
+          fusion
+        };
+
+        try {
+          const resp = await fetch("/api/agent", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await resp.json();
+          if (!resp.ok) {
+            throw new Error(data && data.error ? data.error : "请求失败");
+          }
+
+          addMessage("agent", data.analysis || "(empty response)");
+          setInspector(data.detection);
+        } catch (err) {
+          addMessage("agent", `请求失败：${err.message || err}`);
+        }
+      }
+
+      document.getElementById("send").addEventListener("click", () => {
+        sendMessage().catch(e => {
+          document.getElementById("hint").textContent = e.message || String(e);
+        });
+      });
+
+      document.getElementById("clear").addEventListener("click", () => {
+        document.getElementById("messages").innerHTML = "";
+        document.getElementById("input").value = "";
+        document.getElementById("imageUpload").value = "";
+        document.getElementById("audioUpload").value = "";
+        document.getElementById("hint").textContent = "";
+      });
+
+      (async () => {
+        for (;;) {
+          const ok = await refreshStatus().catch(() => null);
+          if (ok === true) break;
+          await new Promise(r => setTimeout(r, 600));
+        }
+      })();
+    </script>
+  </body>
+</html>

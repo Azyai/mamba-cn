@@ -39,6 +39,16 @@ train = [
     "pillow",
     "torchaudio==2.5.1",
 ]
+rag = [
+    "jieba",
+    "rank-bm25",
+    "sentence-transformers",
+    "faiss-cpu",
+    "pyahocorasick",
+]
+agent = [
+    "langchain-openai",
+]
 
 
 [build-system]

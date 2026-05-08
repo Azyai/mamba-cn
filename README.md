@@ -30,6 +30,16 @@ pip install paddleocr paddlepaddle-gpu openai-whisper -i https://mirrors.aliyun.
 pip install mkl==2024.0.0
 ```
 
+RAG/Agent 可选依赖：
+
+```bash
+python -m pip install ".[rag]" ".[agent]"
+# 或者手动安装
+# pip install jieba rank-bm25 sentence-transformers faiss-cpu pyahocorasick langchain-openai
+```
+
+如果需要 GPU 版 FAISS，请根据 CUDA 环境单独安装 `faiss-gpu`。
+
 依赖环境：Linux / NVIDIA GPU / PyTorch / CUDA 12.4+ / transformers / pillow
 
 ## 项目目录结构
@@ -148,6 +158,40 @@ CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
 
 浏览器打开：http://IP:8000/
 在界面上不仅可以输入文本，还可以填入图片和音频在服务器上的本地绝对路径进行测试。
+
+### RAG 索引构建（Sensitive-lexicon + 规则文档）
+
+```bash
+git clone https://github.com/konsheng/Sensitive-lexicon rag_data/lexicon
+
+python -m mamba_ssm.rag.build_index \
+  --lexicon_dir rag_data/lexicon \
+  --rules_dir rag_data/rules \
+  --output_dir rag_data/index \
+  --embedding_model BAAI/bge-base-zh-v1.5 \
+  --device cpu
+```
+
+### 启用 RAG/Agent 的 Web Demo
+
+```bash
+export QWEN_API_KEY=your_key
+export QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+export QWEN_MODEL=qwen-plus
+
+CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
+  --run_dir runs/lora_2_8b_multimodal \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --device cuda \
+  --dtype fp16 \
+  --rag_index_dir rag_data/index \
+  --rag_device cpu \
+  --rag_top_k 5 \
+  --fusion_threshold 0.5
+```
+
+Agent 对话页入口：http://IP:8000/agent
 
 ## 8B 模型测试 (Web Demo)
 
