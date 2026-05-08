@@ -116,6 +116,13 @@ def _infer_head_hidden_dim(head_state: Dict[str, torch.Tensor]) -> int:
     return int(w.shape[0])
 
 
+def _infer_head_input_dim(head_state: Dict[str, torch.Tensor]) -> int:
+    w = head_state.get("fc1.weight", None)
+    if w is None:
+        raise RuntimeError("无法从 head state 推断 input_dim（缺少 fc1.weight）。")
+    return int(w.shape[1])
+
+
 def _disable_mem_eff_path_if_needed(backbone: Mamba2Backbone, lora_targets: Iterable[str]) -> None:
     if "out_proj" not in set(str(x) for x in lora_targets):
         return
@@ -372,13 +379,8 @@ def load_offensive_predictor(
                 audio_backbone = Wav2Vec2Model.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
                 audio_backbone.eval()
 
-            fusion_dim = config_dict["d_model"]
-            if image_backbone is not None:
-                fusion_dim += 768
-            if audio_backbone is not None:
-                fusion_dim += 768
-                
-            head = MLPHead(d_model=fusion_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+            input_dim = _infer_head_input_dim(head_state)
+            head = MLPHead(d_model=input_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
             head.load_state_dict(head_state, strict=True)
             head.eval()
 
@@ -492,13 +494,8 @@ def load_offensive_predictor(
             audio_backbone = Wav2Vec2Model.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
             audio_backbone.eval()
 
-        fusion_dim = config_dict["d_model"]
-        if image_backbone is not None:
-            fusion_dim += 768
-        if audio_backbone is not None:
-            fusion_dim += 768
-            
-        head = MLPHead(d_model=fusion_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+        input_dim = _infer_head_input_dim(head_state)
+        head = MLPHead(d_model=input_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
         head.load_state_dict(head_state, strict=True)
         head.eval()
 

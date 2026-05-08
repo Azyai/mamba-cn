@@ -450,6 +450,52 @@ def main() -> None:
             return_tensors="pt",
         )
         enc["labels"] = labels
+        if image_processor is not None:
+            import PIL.Image
+
+            images = []
+            image_masks = []
+            for x in batch:
+                img_path = str(x.get("image_path", ""))
+                if img_path and os.path.exists(img_path):
+                    try:
+                        img = PIL.Image.open(img_path).convert("RGB")
+                        images.append(img)
+                        image_masks.append(True)
+                    except Exception:
+                        images.append(PIL.Image.new("RGB", (224, 224)))
+                        image_masks.append(False)
+                else:
+                    images.append(PIL.Image.new("RGB", (224, 224)))
+                    image_masks.append(False)
+            img_enc = image_processor(images=images, return_tensors="pt")
+            enc["pixel_values"] = img_enc["pixel_values"]
+            enc["image_mask"] = torch.tensor(image_masks, dtype=torch.bool)
+
+        if audio_processor is not None:
+            import torchaudio
+
+            audios = []
+            audio_masks = []
+            for x in batch:
+                aud_path = str(x.get("audio_path", ""))
+                if aud_path and os.path.exists(aud_path):
+                    try:
+                        waveform, sample_rate = torchaudio.load(aud_path)
+                        if sample_rate != audio_processor.sampling_rate:
+                            resampler = torchaudio.transforms.Resample(sample_rate, audio_processor.sampling_rate)
+                            waveform = resampler(waveform)
+                        audios.append(waveform[0].numpy())
+                        audio_masks.append(True)
+                    except Exception:
+                        audios.append(torch.zeros(16000).numpy())
+                        audio_masks.append(False)
+                else:
+                    audios.append(torch.zeros(16000).numpy())
+                    audio_masks.append(False)
+            aud_enc = audio_processor(audios, sampling_rate=audio_processor.sampling_rate, return_tensors="pt", padding=True)
+            enc["input_values"] = aud_enc["input_values"]
+            enc["audio_mask"] = torch.tensor(audio_masks, dtype=torch.bool)
         return enc
 
     converted_dir = Path(args.converted_dir)
@@ -508,6 +554,12 @@ def main() -> None:
         ).to(device)
         image_backbone.eval()
 
+        image_processor = AutoImageProcessor.from_pretrained(
+            args.vit_name_or_path,
+            cache_dir=str(multimodal_cache_dir),
+            use_safetensors=False,
+        )
+
         
     if args.wav2vec2_name_or_path:
         from transformers import AutoModel
@@ -517,6 +569,12 @@ def main() -> None:
             use_safetensors=False
         ).to(device)
         audio_backbone.eval()
+
+        audio_processor = Wav2Vec2FeatureExtractor.from_pretrained(
+            args.wav2vec2_name_or_path,
+            cache_dir=str(multimodal_cache_dir),
+            use_safetensors=False,
+        )
 
 
     if bool(args.train_norm):
@@ -706,6 +764,10 @@ def main() -> None:
         for p in classifier.gate.parameters():
             if p.requires_grad:
                 head_params.append(p)
+    if getattr(classifier, "blank_image", None) is not None and classifier.blank_image.requires_grad:
+        head_params.append(classifier.blank_image)
+    if getattr(classifier, "blank_audio", None) is not None and classifier.blank_audio.requires_grad:
+        head_params.append(classifier.blank_audio)
 
     for p in head.parameters():
         if p.requires_grad:
@@ -778,22 +840,28 @@ def main() -> None:
 
     best_avg_sum = -1.0
     best_head_state = None
+    best_classifier_state = None
     best_metrics: Dict[str, object] = {}
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda" and amp_dtype == torch.float16))
     global_step = 0
 
-    def forward_logits(input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
-        if args.lora_enable:
-            outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
-            last_hidden_state = outputs["last_hidden_state"]
-            pooled = masked_mean_pool(last_hidden_state, outputs.get("attention_mask", attention_mask))
-            return head(pooled)
-        with torch.no_grad():
-            outputs = backbone(input_ids=input_ids, attention_mask=attention_mask)
-            last_hidden_state = outputs["last_hidden_state"]
-            pooled = masked_mean_pool(last_hidden_state, outputs.get("attention_mask", attention_mask))
-        pooled = pooled.detach()
-        return head(pooled)
+    def forward_logits(
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        pixel_values: torch.Tensor | None = None,
+        image_mask: torch.Tensor | None = None,
+        input_values: torch.Tensor | None = None,
+        audio_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        outputs = classifier(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values,
+            image_mask=image_mask,
+            input_values=input_values,
+            audio_mask=audio_mask,
+        )
+        return outputs.logits
 
     try:
         for epoch in range(1, args.epochs + 1):
@@ -828,9 +896,28 @@ def main() -> None:
                 if attention_mask is not None:
                     attention_mask = attention_mask.to(device)
                 labels = batch["labels"].to(device)
+                pixel_values = batch.get("pixel_values", None)
+                if pixel_values is not None:
+                    pixel_values = pixel_values.to(device)
+                image_mask = batch.get("image_mask", None)
+                if image_mask is not None:
+                    image_mask = image_mask.to(device)
+                input_values = batch.get("input_values", None)
+                if input_values is not None:
+                    input_values = input_values.to(device)
+                audio_mask = batch.get("audio_mask", None)
+                if audio_mask is not None:
+                    audio_mask = audio_mask.to(device)
 
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                    logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
+                    logits = forward_logits(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        pixel_values=pixel_values,
+                        image_mask=image_mask,
+                        input_values=input_values,
+                        audio_mask=audio_mask,
+                    )
                     if loss_name == "focal":
                         loss = focal_loss(
                             logits,
@@ -963,8 +1050,27 @@ def main() -> None:
                         if attention_mask is not None:
                             attention_mask = attention_mask.to(device)
                         labels = batch["labels"].to(device)
+                        pixel_values = batch.get("pixel_values", None)
+                        if pixel_values is not None:
+                            pixel_values = pixel_values.to(device)
+                        image_mask = batch.get("image_mask", None)
+                        if image_mask is not None:
+                            image_mask = image_mask.to(device)
+                        input_values = batch.get("input_values", None)
+                        if input_values is not None:
+                            input_values = input_values.to(device)
+                        audio_mask = batch.get("audio_mask", None)
+                        if audio_mask is not None:
+                            audio_mask = audio_mask.to(device)
                         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                            logits = forward_logits(input_ids=input_ids, attention_mask=attention_mask)
+                            logits = forward_logits(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                pixel_values=pixel_values,
+                                image_mask=image_mask,
+                                input_values=input_values,
+                                audio_mask=audio_mask,
+                            )
                             pred = logits.argmax(dim=-1)
                         all_pred.append(pred.detach().cpu())
                         all_gold.append(labels.detach().cpu())
@@ -1072,11 +1178,15 @@ def main() -> None:
                 best_metrics["best_metric"] = "avg_sum"
                 best_metrics["best_score"] = float(score)
                 best_head_state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
+                best_classifier_state = classifier.trainable_state_dict()
                 ckpt = {
                     "head": best_head_state,
+                    "classifier_state": best_classifier_state,
                     "config": asdict(backbone.config),
                     "tokenizer_model_path": str(Path(tok_cfg.model_file)),
                     "max_length": args.max_length,
+                    "vit_name_or_path": args.vit_name_or_path,
+                    "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
                 }
                 if lora_cfg is not None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
@@ -1106,7 +1216,15 @@ def main() -> None:
             "head_hidden_dim": args.head_hidden_dim,
             "dropout": args.dropout,
             "num_labels": 2,
+            "vit_name_or_path": args.vit_name_or_path,
+            "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
         }
+        if best_classifier_state is not None:
+            full_ckpt["classifier_state"] = best_classifier_state
+        if classifier.blank_image is not None:
+            full_ckpt["blank_image"] = classifier.blank_image.data.detach().cpu()
+        if classifier.blank_audio is not None:
+            full_ckpt["blank_audio"] = classifier.blank_audio.data.detach().cpu()
         torch.save(full_ckpt, save_dir / "full_model.pt")
 
     (save_dir / "benchmark_summary.json").write_text(
