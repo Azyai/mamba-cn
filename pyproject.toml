@@ -34,7 +34,7 @@ causal-conv1d = [
 train = [
     "safetensors",
     "sentencepiece",
-    "transformers",
+    "transformers==4.46.3",
     "tqdm",
     "pillow",
     "torchaudio==2.5.1",

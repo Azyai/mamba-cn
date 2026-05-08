@@ -129,6 +129,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
 ## 8B 训练脚本（LoRA）
 
 ```bash
+export HF_ENDPOINT=https://hf-mirror.com
 CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --datasets cold,toxicn \
   --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
