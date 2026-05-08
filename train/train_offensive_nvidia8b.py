@@ -322,6 +322,16 @@ def normalize_path_arg(value: str) -> str:
     return value.replace("\\", "/")
 
 
+def _load_image_backbone(name_or_path: str, *, cache_dir: Path, device: torch.device) -> torch.nn.Module:
+    from transformers import AutoModel
+
+    model = AutoModel.from_pretrained(str(name_or_path), cache_dir=str(cache_dir), use_safetensors=False)
+    vision = getattr(model, "vision_model", None)
+    if vision is not None:
+        model = vision
+    return model.to(device)
+
+
 
 def main() -> None:
     # --- HOTFIX FOR HF SAFETENSORS / TORCH VULNERABILITY ---
@@ -546,12 +556,7 @@ def main() -> None:
     audio_backbone = None
     
     if args.vit_name_or_path:
-        from transformers import AutoModel
-        image_backbone = AutoModel.from_pretrained(
-            args.vit_name_or_path, 
-            cache_dir=str(multimodal_cache_dir), 
-            use_safetensors=False
-        ).to(device)
+        image_backbone = _load_image_backbone(args.vit_name_or_path, cache_dir=multimodal_cache_dir, device=device)
         image_backbone.eval()
 
         image_processor = AutoImageProcessor.from_pretrained(

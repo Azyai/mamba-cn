@@ -312,6 +312,16 @@ def normalize_path_arg(value: str) -> str:
     return value.replace("\\", "/")
 
 
+def _load_image_backbone(name_or_path: str, *, cache_dir: Path, device: torch.device) -> torch.nn.Module:
+    from transformers import AutoModel
+
+    model = AutoModel.from_pretrained(str(name_or_path), cache_dir=str(cache_dir), use_safetensors=False)
+    vision = getattr(model, "vision_model", None)
+    if vision is not None:
+        model = vision
+    return model.to(device)
+
+
 def compute_binary_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, float]:
     acc = (tp + tn) / max(tp + tn + fp + fn, 1)
     prec = tp / max(tp + fp, 1)
@@ -502,8 +512,7 @@ def main() -> None:
     audio_backbone = None
     
     if args.vit_name_or_path:
-        from transformers import ViTModel
-        image_backbone = AutoModel.from_pretrained(args.vit_name_or_path, cache_dir=str(multimodal_cache_dir), use_safetensors=False).to(device)
+        image_backbone = _load_image_backbone(args.vit_name_or_path, cache_dir=multimodal_cache_dir, device=device)
         image_backbone.eval()
         
     if args.wav2vec2_name_or_path:

@@ -123,6 +123,19 @@ def _infer_head_input_dim(head_state: Dict[str, torch.Tensor]) -> int:
     return int(w.shape[1])
 
 
+def _load_image_backbone(name_or_path: str, *, cache_dir: Path, device: torch.device, dtype: torch.dtype) -> torch.nn.Module:
+    from transformers import AutoModel
+
+    try:
+        model = AutoModel.from_pretrained(str(name_or_path), cache_dir=str(cache_dir), local_files_only=True)
+    except Exception:
+        model = AutoModel.from_pretrained(str(name_or_path), cache_dir=str(cache_dir))
+    vision = getattr(model, "vision_model", None)
+    if vision is not None:
+        model = vision
+    return model.to(device, dtype=dtype)
+
+
 def _disable_mem_eff_path_if_needed(backbone: Mamba2Backbone, lora_targets: Iterable[str]) -> None:
     if "out_proj" not in set(str(x) for x in lora_targets):
         return
@@ -362,7 +375,7 @@ def load_offensive_predictor(
             tok = _maybe_load_transformers_tokenizer(tok_path, cache_dir=str((run_path.parent.parent / "predict/gpt2").resolve()))
 
         if "classifier_state" in ckpt:
-            from transformers import ViTModel, Wav2Vec2Model, AutoImageProcessor, Wav2Vec2FeatureExtractor
+            from transformers import Wav2Vec2Model, AutoImageProcessor, Wav2Vec2FeatureExtractor
             
             image_backbone = None
             audio_backbone = None
@@ -371,7 +384,7 @@ def load_offensive_predictor(
             
             if ckpt.get("vit_name_or_path"):
                 image_processor = AutoImageProcessor.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True)
-                image_backbone = ViTModel.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
+                image_backbone = _load_image_backbone(ckpt["vit_name_or_path"], cache_dir=(run_path.parent.parent / "predict/multimodal").resolve(), device=dev, dtype=dt)
                 image_backbone.eval()
                 
             if ckpt.get("wav2vec2_name_or_path"):
@@ -477,7 +490,7 @@ def load_offensive_predictor(
         tok = _maybe_load_transformers_tokenizer(tok_path, cache_dir=str((run_path.parent.parent / "predict/gpt2").resolve()))
 
     if "classifier_state" in ckpt:
-        from transformers import ViTModel, Wav2Vec2Model, AutoImageProcessor, Wav2Vec2FeatureExtractor
+        from transformers import Wav2Vec2Model, AutoImageProcessor, Wav2Vec2FeatureExtractor
         
         image_backbone = None
         audio_backbone = None
@@ -486,7 +499,7 @@ def load_offensive_predictor(
         
         if ckpt.get("vit_name_or_path"):
             image_processor = AutoImageProcessor.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True)
-            image_backbone = ViTModel.from_pretrained(ckpt["vit_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
+            image_backbone = _load_image_backbone(ckpt["vit_name_or_path"], cache_dir=(run_path.parent.parent / "predict/multimodal").resolve(), device=dev, dtype=dt)
             image_backbone.eval()
             
         if ckpt.get("wav2vec2_name_or_path"):
