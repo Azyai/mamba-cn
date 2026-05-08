@@ -532,13 +532,7 @@ def main() -> None:
             for p in backbone.norm_f.parameters():
                 p.requires_grad = True
 
-    fusion_dim = backbone.config.d_model
-    if image_backbone is not None:
-        fusion_dim += args.image_dim
-    if audio_backbone is not None:
-        fusion_dim += args.audio_dim
-
-    head = MLPHead(d_model=fusion_dim, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
+    head = MLPHead(d_model=backbone.config.d_model, hidden_dim=args.head_hidden_dim, dropout=args.dropout).to(device)
     
     classifier = MultimodalClassifier(
         text_backbone=backbone,
