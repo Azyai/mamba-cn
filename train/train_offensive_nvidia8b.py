@@ -360,6 +360,8 @@ def main() -> None:
     parser.add_argument("--multimodal_cache_dir", type=str, default="predict/multimodal")
     parser.add_argument("--image_dim", type=int, default=768)
     parser.add_argument("--audio_dim", type=int, default=768)
+    parser.add_argument("--image_drop_prob", type=float, default=0.0)
+    parser.add_argument("--audio_drop_prob", type=float, default=0.0)
 
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
@@ -765,8 +767,20 @@ def main() -> None:
         for p in classifier.audio_proj.parameters():
             if p.requires_grad:
                 head_params.append(p)
-    if hasattr(classifier, "gate") and classifier.gate is not None:
-        for p in classifier.gate.parameters():
+    if hasattr(classifier, "image_gate") and classifier.image_gate is not None:
+        for p in classifier.image_gate.parameters():
+            if p.requires_grad:
+                head_params.append(p)
+    if hasattr(classifier, "audio_gate") and classifier.audio_gate is not None:
+        for p in classifier.audio_gate.parameters():
+            if p.requires_grad:
+                head_params.append(p)
+    if hasattr(classifier, "image_conf_proj") and classifier.image_conf_proj is not None:
+        for p in classifier.image_conf_proj.parameters():
+            if p.requires_grad:
+                head_params.append(p)
+    if hasattr(classifier, "audio_conf_proj") and classifier.audio_conf_proj is not None:
+        for p in classifier.audio_conf_proj.parameters():
             if p.requires_grad:
                 head_params.append(p)
     if getattr(classifier, "blank_image", None) is not None and classifier.blank_image.requires_grad:
@@ -907,12 +921,18 @@ def main() -> None:
                 image_mask = batch.get("image_mask", None)
                 if image_mask is not None:
                     image_mask = image_mask.to(device)
+                    if args.image_drop_prob > 0:
+                        drop = torch.rand(image_mask.shape, device=device) < float(args.image_drop_prob)
+                        image_mask = image_mask & (~drop)
                 input_values = batch.get("input_values", None)
                 if input_values is not None:
                     input_values = input_values.to(device)
                 audio_mask = batch.get("audio_mask", None)
                 if audio_mask is not None:
                     audio_mask = audio_mask.to(device)
+                    if args.audio_drop_prob > 0:
+                        drop = torch.rand(audio_mask.shape, device=device) < float(args.audio_drop_prob)
+                        audio_mask = audio_mask & (~drop)
 
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
                     logits = forward_logits(

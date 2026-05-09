@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def masked_mean_pool(last_hidden_state: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
@@ -105,15 +106,11 @@ class MultimodalClassifier(nn.Module):
         self.image_proj = nn.Linear(image_dim, text_dim) if image_backbone else None
         self.audio_proj = nn.Linear(audio_dim, text_dim) if audio_backbone else None
         
-        fusion_dim = text_dim
-        if image_backbone: fusion_dim += text_dim
-        if audio_backbone: fusion_dim += text_dim
-        
-        # 门控机制：抑制噪声特征
-        self.gate = nn.Sequential(
-            nn.Linear(fusion_dim, text_dim),
-            nn.Sigmoid()
-        )
+        # Missing-aware reliability gated fusion (MRGF)
+        self.image_conf_proj = nn.Linear(text_dim, 1) if image_backbone else None
+        self.audio_conf_proj = nn.Linear(text_dim, 1) if audio_backbone else None
+        self.image_gate = nn.Sequential(nn.Linear(text_dim * 2 + 3, text_dim), nn.Sigmoid()) if image_backbone else None
+        self.audio_gate = nn.Sequential(nn.Linear(text_dim * 2 + 3, text_dim), nn.Sigmoid()) if audio_backbone else None
 
     @torch.no_grad()
     def freeze_backbones_(self) -> "MultimodalClassifier":
@@ -178,32 +175,54 @@ class MultimodalClassifier(nn.Module):
             audio_feat = None
 
         # Gated Fusion
+        image_mask_f = None
+        audio_mask_f = None
+
         if image_feat is not None:
             image_feat = self.image_proj(image_feat)
+            if image_mask is None:
+                image_mask_f = torch.zeros((batch_size, 1), device=device, dtype=image_feat.dtype) if pixel_values is None else torch.ones((batch_size, 1), device=device, dtype=image_feat.dtype)
+            else:
+                image_mask_f = image_mask.to(dtype=image_feat.dtype, device=device).unsqueeze(1)
+            image_conf = torch.sigmoid(self.image_conf_proj(image_feat)) if self.image_conf_proj is not None else torch.zeros((batch_size, 1), device=device, dtype=image_feat.dtype)
+            image_sim = F.cosine_similarity(text_feat, image_feat, dim=-1).unsqueeze(1)
+            gate_in = torch.cat([text_feat, image_feat, image_mask_f, image_conf, image_sim], dim=-1)
+            g_img = self.image_gate(gate_in) if self.image_gate is not None else torch.ones_like(text_feat)
+        else:
+            g_img = None
+
         if audio_feat is not None:
             audio_feat = self.audio_proj(audio_feat)
-        
-        feats = [text_feat]
-        if image_feat is not None:
-            feats.append(image_feat)
-        if audio_feat is not None:
-            feats.append(audio_feat)
-            
-        concat_feat = torch.cat(feats, dim=-1)
-        gated_weights = self.gate(concat_feat)
-        
-        # 门控相加融合，文本作为骨干基底
+            if audio_mask is None:
+                audio_mask_f = torch.zeros((batch_size, 1), device=device, dtype=audio_feat.dtype) if input_values is None else torch.ones((batch_size, 1), device=device, dtype=audio_feat.dtype)
+            else:
+                audio_mask_f = audio_mask.to(dtype=audio_feat.dtype, device=device).unsqueeze(1)
+            audio_conf = torch.sigmoid(self.audio_conf_proj(audio_feat)) if self.audio_conf_proj is not None else torch.zeros((batch_size, 1), device=device, dtype=audio_feat.dtype)
+            audio_sim = F.cosine_similarity(text_feat, audio_feat, dim=-1).unsqueeze(1)
+            gate_in = torch.cat([text_feat, audio_feat, audio_mask_f, audio_conf, audio_sim], dim=-1)
+            g_aud = self.audio_gate(gate_in) if self.audio_gate is not None else torch.ones_like(text_feat)
+        else:
+            g_aud = None
+
         pooled = text_feat
-        if image_feat is not None:
-            pooled = pooled + (image_feat * gated_weights)
-        if audio_feat is not None:
-            pooled = pooled + (audio_feat * gated_weights)
+        if image_feat is not None and g_img is not None and image_mask_f is not None:
+            pooled = pooled + (image_mask_f * g_img * image_feat)
+        if audio_feat is not None and g_aud is not None and audio_mask_f is not None:
+            pooled = pooled + (audio_mask_f * g_aud * audio_feat)
             
         logits = self.head(pooled)
         return ForwardOutput(logits=logits, pooled=pooled)
 
     def trainable_state_dict(self) -> Dict[str, object]:
-        out = {"head": self.head.state_dict(), "gate": self.gate.state_dict()}
+        out = {"head": self.head.state_dict()}
+        if self.image_gate is not None:
+            out["image_gate"] = self.image_gate.state_dict()
+        if self.audio_gate is not None:
+            out["audio_gate"] = self.audio_gate.state_dict()
+        if self.image_conf_proj is not None:
+            out["image_conf_proj"] = self.image_conf_proj.state_dict()
+        if self.audio_conf_proj is not None:
+            out["audio_conf_proj"] = self.audio_conf_proj.state_dict()
         if self.image_proj is not None:
             out["image_proj"] = self.image_proj.state_dict()
         if self.audio_proj is not None:

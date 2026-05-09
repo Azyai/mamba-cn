@@ -123,6 +123,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
 | `--multimodal_cache_dir` | 多模态模型下载缓存目录 | 默认 `predict/multimodal` |
 | `--image_dim` | 视觉特征维度 | 默认 768 |
 | `--audio_dim` | 听觉特征维度 | 默认 768 |
+| `--image_drop_prob` | 图像模态随机丢弃概率 | 默认 0.0 表示不丢弃；数值越高表示训练时随机置空图像模态的比例越大，用于缺失模态鲁棒训练 |
+| `--audio_drop_prob` | 音频模态随机丢弃概率 | 默认 0.0 表示不丢弃；数值越高表示训练时随机置空音频模态的比例越大，用于缺失模态鲁棒训练 |
 
 其他参数继承原文本分类任务配置。
 

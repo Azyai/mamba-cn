@@ -447,6 +447,8 @@ def main() -> None:
     parser.add_argument("--multimodal_cache_dir", type=str, default="predict/multimodal")
     parser.add_argument("--image_dim", type=int, default=768)
     parser.add_argument("--audio_dim", type=int, default=768)
+    parser.add_argument("--image_drop_prob", type=float, default=0.0)
+    parser.add_argument("--audio_drop_prob", type=float, default=0.0)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_full_model", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
@@ -764,7 +766,7 @@ def main() -> None:
             continue
         if name.endswith(".lora_A") or name.endswith(".lora_B"):
             lora_params.append(p)
-        elif "head." in name or "blank_" in name:
+        elif "head." in name or "blank_" in name or "image_proj" in name or "audio_proj" in name or "image_gate" in name or "audio_gate" in name or "image_conf_proj" in name or "audio_conf_proj" in name:
             head_params.append(p)
         elif ".norm." in name or name.startswith("text_backbone.norm_f.") or ".norm_f." in name:
             norm_params.append(p)
@@ -917,6 +919,9 @@ def main() -> None:
                 image_mask = batch.get("image_mask", None)
                 if image_mask is not None:
                     image_mask = image_mask.to(device)
+                    if args.image_drop_prob > 0:
+                        drop = torch.rand(image_mask.shape, device=device) < float(args.image_drop_prob)
+                        image_mask = image_mask & (~drop)
                     
                 input_values = batch.get("input_values", None)
                 if input_values is not None:
@@ -924,6 +929,9 @@ def main() -> None:
                 audio_mask = batch.get("audio_mask", None)
                 if audio_mask is not None:
                     audio_mask = audio_mask.to(device)
+                    if args.audio_drop_prob > 0:
+                        drop = torch.rand(audio_mask.shape, device=device) < float(args.audio_drop_prob)
+                        audio_mask = audio_mask & (~drop)
 
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
                     logits = forward_logits(
