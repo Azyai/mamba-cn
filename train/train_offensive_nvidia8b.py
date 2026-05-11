@@ -641,9 +641,19 @@ def main() -> None:
     ).to(device)
     classifier.freeze_backbones_()
     if int(args.bidirectional_layers) > 0:
+        if (
+            amp_dtype == torch.float16
+            and (not bool(args.bidirectional_share_mixer))
+            and bool(args.bidirectional_train_backward)
+        ):
+            raise ValueError(
+                "FP16 + GradScaler 不支持直接训练独立 backward Mamba-2 mixer 的 FP16 参数。"
+                "请去掉 --bidirectional_train_backward，或改用 --bf16，或只训练共享权重双向扫描的融合层。"
+            )
         backbone.set_bidirectional_trainable_(
             train_fusion=str(args.bidirectional_fusion).strip().lower() in {"gate", "concat"},
             train_backward_mixer=(not bool(args.bidirectional_share_mixer)) and bool(args.bidirectional_train_backward),
+            fusion_dtype=torch.float32,
         )
 
     lora_cfg = None

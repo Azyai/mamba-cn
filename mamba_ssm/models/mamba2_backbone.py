@@ -119,10 +119,18 @@ class Block(nn.Module):
                 self.bidirectional_proj.weight[idx, idx + self.d_model] = 0.5
         return self
 
-    def set_bidirectional_trainable_(self, *, train_fusion: bool = True, train_backward_mixer: bool = False) -> "Block":
+    def set_bidirectional_trainable_(
+        self,
+        *,
+        train_fusion: bool = True,
+        train_backward_mixer: bool = False,
+        fusion_dtype: Optional[torch.dtype] = None,
+    ) -> "Block":
         for module in (self.bidirectional_gate, self.bidirectional_proj):
             if module is None:
                 continue
+            if train_fusion and fusion_dtype is not None:
+                module.to(dtype=fusion_dtype)
             for p in module.parameters():
                 p.requires_grad = bool(train_fusion)
         if self.backward_mixer is not None:
@@ -277,12 +285,19 @@ class Mamba2Backbone(nn.Module):
         )
         return self
 
-    def set_bidirectional_trainable_(self, *, train_fusion: bool = True, train_backward_mixer: bool = False) -> "Mamba2Backbone":
+    def set_bidirectional_trainable_(
+        self,
+        *,
+        train_fusion: bool = True,
+        train_backward_mixer: bool = False,
+        fusion_dtype: Optional[torch.dtype] = None,
+    ) -> "Mamba2Backbone":
         for layer in self.layers:
             if getattr(layer, "bidirectional_enabled", False):
                 layer.set_bidirectional_trainable_(
                     train_fusion=train_fusion,
                     train_backward_mixer=train_backward_mixer,
+                    fusion_dtype=fusion_dtype,
                 )
         return self
 
