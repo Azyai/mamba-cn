@@ -407,6 +407,10 @@ def main() -> None:
     parser.add_argument("--lora_train_head", type=int, default=1)
     parser.add_argument("--gradient_checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--disable_mem_eff_path", action="store_true")
+    parser.add_argument("--bidirectional_layers", type=int, default=0)
+    parser.add_argument("--bidirectional_fusion", type=str, default="gate", choices=("add", "gate", "concat"))
+    parser.add_argument("--bidirectional_share_mixer", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--bidirectional_train_backward", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--class_weight_non_toxic", type=float, default=1.0)
     parser.add_argument("--class_weight_toxic", type=float, default=1.0)
     parser.add_argument("--loss", type=str, default="ce")
@@ -550,6 +554,12 @@ def main() -> None:
         backbone_dtype = torch.float16
     backbone, load_info = Mamba2Backbone.load_pretrained(converted_dir, device=device, dtype=backbone_dtype, strict=False)
     backbone = backbone.to(device)
+    if int(args.bidirectional_layers) > 0:
+        backbone.enable_bidirectional_(
+            num_layers=int(args.bidirectional_layers),
+            fusion=str(args.bidirectional_fusion),
+            share_mixer=bool(args.bidirectional_share_mixer),
+        )
     backbone.freeze_()
     backbone.eval()
 
@@ -611,6 +621,11 @@ def main() -> None:
         audio_dim=args.audio_dim,
     ).to(device)
     classifier.freeze_backbones_()
+    if int(args.bidirectional_layers) > 0:
+        backbone.set_bidirectional_trainable_(
+            train_fusion=str(args.bidirectional_fusion).strip().lower() in {"gate", "concat"},
+            train_backward_mixer=(not bool(args.bidirectional_share_mixer)) and bool(args.bidirectional_train_backward),
+        )
 
     lora_cfg = None
     lora_replaced: List[str] = []
@@ -623,9 +638,10 @@ def main() -> None:
         need_disable_mem_eff = bool(args.disable_mem_eff_path) or ("out_proj" in lora_cfg.target)
         if need_disable_mem_eff:
             for layer in backbone.layers:
-                mixer = getattr(layer, "mixer", None)
-                if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
-                    mixer.use_mem_eff_path = False
+                for mixer_name in ("mixer", "backward_mixer"):
+                    mixer = getattr(layer, mixer_name, None)
+                    if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
+                        mixer.use_mem_eff_path = False
 
     def load_dataset(ds_name: str) -> Tuple[List[Tuple[str, int, str, str]], List[Tuple[str, int, str, str]]]:
         if ds_name in {"cold", "coldataset", "col"}:
@@ -1217,6 +1233,10 @@ def main() -> None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
                     ckpt["lora_cfg"] = json.loads(lora_cfg.to_json())
                     ckpt["lora_replaced"] = list(lora_replaced)
+                if int(backbone.config.bidirectional_layers) > 0:
+                    ckpt["bidirectional_state"] = {
+                        k: v.detach().cpu() for k, v in backbone.bidirectional_state_dict().items()
+                    }
                 torch.save(ckpt, save_dir / "best_head.pt")
                 (save_dir / "best_metrics.json").write_text(
                     json.dumps(compact_epoch_metrics_for_save(best_metrics), ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1224,6 +1244,19 @@ def main() -> None:
                 if lora_cfg is not None:
                     (save_dir / "lora_config.json").write_text(lora_cfg.to_json(), encoding="utf-8")
                     torch.save({k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}, save_dir / "lora_adapter.pt")
+                if int(backbone.config.bidirectional_layers) > 0:
+                    (save_dir / "bidirectional_config.json").write_text(
+                        json.dumps(
+                            {
+                                "bidirectional_layers": int(backbone.config.bidirectional_layers),
+                                "bidirectional_fusion": str(backbone.config.bidirectional_fusion),
+                                "bidirectional_share_mixer": bool(backbone.config.bidirectional_share_mixer),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
 
             parts = [f"{k}:{float(eval_metrics[k]['f1']):.4f}" for k in eval_metrics]
             print(f"[eval] epoch {epoch}/{args.epochs} avg_sum {avg_sum:.4f} " + " ".join(parts))
@@ -1246,6 +1279,9 @@ def main() -> None:
         }
         if best_classifier_state is not None:
             full_ckpt["classifier_state"] = best_classifier_state
+        if lora_cfg is not None:
+            full_ckpt["lora_cfg"] = json.loads(lora_cfg.to_json())
+            full_ckpt["lora_replaced"] = list(lora_replaced)
         if classifier.blank_image is not None:
             full_ckpt["blank_image"] = classifier.blank_image.data.detach().cpu()
         if classifier.blank_audio is not None:

@@ -140,9 +140,21 @@ def _disable_mem_eff_path_if_needed(backbone: Mamba2Backbone, lora_targets: Iter
     if "out_proj" not in set(str(x) for x in lora_targets):
         return
     for layer in getattr(backbone, "layers", []):
-        mixer = getattr(layer, "mixer", None)
-        if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
-            setattr(mixer, "use_mem_eff_path", False)
+        for mixer_name in ("mixer", "backward_mixer"):
+            mixer = getattr(layer, mixer_name, None)
+            if mixer is not None and hasattr(mixer, "use_mem_eff_path"):
+                setattr(mixer, "use_mem_eff_path", False)
+
+
+def _apply_bidirectional_config(backbone: Mamba2Backbone, config_dict: Dict[str, Any]) -> None:
+    num_layers = int(config_dict.get("bidirectional_layers", 0) or 0)
+    if num_layers <= 0:
+        return
+    backbone.enable_bidirectional_(
+        num_layers=num_layers,
+        fusion=str(config_dict.get("bidirectional_fusion", "gate")),
+        share_mixer=bool(config_dict.get("bidirectional_share_mixer", True)),
+    )
 
 
 def _build_backbone_from_config(config_dict: Dict[str, Any], *, device: torch.device, dtype: torch.dtype) -> Mamba2Backbone:
@@ -155,6 +167,9 @@ def _build_backbone_from_config(config_dict: Dict[str, Any], *, device: torch.de
         residual_in_fp32=bool(config_dict.get("residual_in_fp32", True)),
         fused_add_norm=bool(config_dict.get("fused_add_norm", True)),
         pad_vocab_size_multiple=int(config_dict.get("pad_vocab_size_multiple", 8)),
+        bidirectional_layers=int(config_dict.get("bidirectional_layers", 0) or 0),
+        bidirectional_fusion=str(config_dict.get("bidirectional_fusion", "gate")),
+        bidirectional_share_mixer=bool(config_dict.get("bidirectional_share_mixer", True)),
     )
     return Mamba2Backbone(cfg, device=device, dtype=dtype)
 
@@ -353,6 +368,19 @@ def load_offensive_predictor(
         ckpt = torch.load(str(full_model), map_location="cpu")
         config_dict = dict(ckpt["config"])
         backbone = _build_backbone_from_config(config_dict, device=dev, dtype=dt)
+        lora_cfg_dict = ckpt.get("lora_cfg", None)
+        if isinstance(lora_cfg_dict, dict):
+            targets = lora_cfg_dict.get("target", ("in_proj",))
+            if isinstance(targets, list):
+                targets = tuple(str(x) for x in targets)
+            lora_cfg = LoRAConfig(
+                r=int(lora_cfg_dict.get("r", 8)),
+                alpha=int(lora_cfg_dict.get("alpha", 16)),
+                dropout=float(lora_cfg_dict.get("dropout", 0.05)),
+                target=tuple(str(x) for x in targets),
+            )
+            inject_lora(backbone, lora_cfg)
+            _disable_mem_eff_path_if_needed(backbone, lora_cfg.target)
         backbone.load_state_dict(ckpt["backbone"], strict=True)
         backbone = backbone.to(dev)
         backbone.eval()
@@ -455,6 +483,9 @@ def load_offensive_predictor(
 
     backbone, _ = Mamba2Backbone.load_pretrained(resolved_pretrained, device=dev, dtype=dt, strict=False)
     backbone = backbone.to(dev)
+    _apply_bidirectional_config(backbone, config_dict)
+    if int(config_dict.get("bidirectional_layers", 0) or 0) > 0 and isinstance(ckpt.get("bidirectional_state", None), dict):
+        backbone.load_state_dict(ckpt["bidirectional_state"], strict=False)
     backbone.eval()
 
     lora_cfg_dict = ckpt.get("lora_cfg", None)

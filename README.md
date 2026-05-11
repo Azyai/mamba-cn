@@ -144,6 +144,61 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --save_dir runs/lora_8_b_multimodal
 ```
 
+### 8B 双向 Mamba-2 上下文增强（可选）
+
+默认情况下，双向 Mamba-2 是关闭的：
+
+- `--bidirectional_layers 0`，即不改动原始 Mamba-2 顺序扫描。
+- 多模态融合方式仍然是原来的 MRGF：文本特征先由 `Mamba2Backbone` 提取，再与 ViT 图像特征、Wav2Vec2 音频特征通过缺失模态感知可靠门控融合。
+- LoRA 默认仍注入文本主干 Mamba2 block 的 `mixer.in_proj`。
+
+如果要启用论文中的 **Bi-Mamba2 Context Enhancement Block**，推荐先只在顶部若干层开启双向扫描：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
+  --datasets cold,toxicn \
+  --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
+  --toxicn_dev_ratio 0.1 \
+  --fp16 \
+  --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
+  --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
+  --vit_name_or_path OFA-Sys/chinese-clip-vit-base-patch16 \
+  --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
+  --bidirectional_layers 4 \
+  --bidirectional_fusion gate \
+  --bidirectional_share_mixer \
+  --save_dir runs/lora_8_b_bimamba2_multimodal
+```
+
+双向扫描参数说明：
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--bidirectional_layers` | `0` | 启用双向扫描的 Mamba2 block 数量；从主干顶部最后 N 层开始替换，`0` 表示关闭 |
+| `--bidirectional_fusion` | `gate` | 前向扫描与反向扫描的融合方式，可选 `add`、`gate`、`concat` |
+| `--bidirectional_share_mixer` / `--no-bidirectional_share_mixer` | `True` | 是否让 forward/backward 共享同一个 Mamba-2 mixer 权重 |
+| `--bidirectional_train_backward` / `--no-bidirectional_train_backward` | `False` | 在不共享 mixer 时，是否训练独立 backward mixer；默认只训练融合层和 LoRA |
+
+三种常用运行方式：
+
+1. **关闭双向，保持原始 MRGF 多模态方案**
+   `--bidirectional_layers 0`
+   这是当前默认设置，适合复现实验基线。
+
+2. **共享权重双向扫描，推荐默认实验设置**
+   `--bidirectional_layers 4 --bidirectional_fusion gate --bidirectional_share_mixer`
+   forward 和 backward 使用同一套 Mamba-2 mixer 参数，对原序列和反转序列各扫描一次，再通过门控融合；参数量基本不增加，但计算量约增加一次 Mamba scan。
+
+3. **独立 backward mixer，容量更大但显存更高**
+   `--bidirectional_layers 4 --bidirectional_fusion gate --no-bidirectional_share_mixer`
+   会为反向分支创建独立 Mamba-2 mixer，并从 forward mixer 初始化。默认 backward mixer 冻结；若需要训练它，再加 `--bidirectional_train_backward`。8B 场景下该模式显存和参数开销明显更高，建议作为消融实验使用。
+
+融合方式含义：
+
+- `add`：前向/反向输出直接平均，额外参数最少。
+- `gate`：使用可学习门控按 token 动态融合前后向上下文，推荐用于攻击性、反讽、否定等需要完整上下文的文本检测。
+- `concat`：拼接前后向输出后线性投影回原维度，表达能力较强，但比 `add` 多一个投影层。
+
 ## test 目录下的测试命令
 
 多模态 Web demo 演示（支持纯文本、纯图片、纯音频或任意多模态组合输入）：
