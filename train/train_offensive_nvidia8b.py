@@ -407,6 +407,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--lora_lr", type=float, default=1e-4)
     parser.add_argument("--head_lr", type=float, default=2e-4)
+    parser.add_argument("--bidirectional_lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--grad_accum", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -792,6 +793,7 @@ def main() -> None:
     lora_params: List[torch.nn.Parameter] = []
     head_params: List[torch.nn.Parameter] = []
     norm_params: List[torch.nn.Parameter] = []
+    bidirectional_params: List[torch.nn.Parameter] = []
     other_params: List[torch.nn.Parameter] = []
     for name, p in backbone.named_parameters():
         if not p.requires_grad:
@@ -800,6 +802,8 @@ def main() -> None:
             lora_params.append(p)
         elif ".norm." in name or name.startswith("norm_f.") or ".norm_f." in name:
             norm_params.append(p)
+        elif ".bidirectional_gate." in name or ".bidirectional_proj." in name:
+            bidirectional_params.append(p)
         else:
             other_params.append(p)
             
@@ -844,10 +848,20 @@ def main() -> None:
         param_groups.append({"params": head_params, "lr": float(args.head_lr), "weight_decay": float(args.weight_decay)})
     if norm_params:
         param_groups.append({"params": norm_params, "lr": float(args.head_lr), "weight_decay": 0.0})
+    if bidirectional_params:
+        param_groups.append({"params": bidirectional_params, "lr": float(args.bidirectional_lr), "weight_decay": 0.0})
     if other_params:
         param_groups.append({"params": other_params, "lr": float(args.lr), "weight_decay": float(args.weight_decay)})
 
     optimizer = torch.optim.AdamW(param_groups)
+    print(
+        "[optim] "
+        f"lora={len(lora_params)}@{float(args.lora_lr):g} "
+        f"head={len(head_params)}@{float(args.head_lr):g} "
+        f"norm={len(norm_params)}@{float(args.head_lr):g} "
+        f"bimamba={len(bidirectional_params)}@{float(args.bidirectional_lr):g} "
+        f"other={len(other_params)}@{float(args.lr):g}"
+    )
 
     ce_weight = None
     if float(args.class_weight_non_toxic) != 1.0 or float(args.class_weight_toxic) != 1.0:

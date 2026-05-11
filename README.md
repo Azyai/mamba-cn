@@ -178,6 +178,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
 | `--bidirectional_fusion` | `gate` | 前向扫描与反向扫描的融合方式，可选 `add`、`gate`、`concat` |
 | `--bidirectional_share_mixer` / `--no-bidirectional_share_mixer` | `True` | 是否让 forward/backward 共享同一个 Mamba-2 mixer 权重 |
 | `--bidirectional_train_backward` / `--no-bidirectional_train_backward` | `False` | 在不共享 mixer 时，是否训练独立 backward mixer；默认只训练融合层和 LoRA |
+| `--bidirectional_lr` | `1e-4` | 双向 `gate/concat` 融合层的单独学习率；避免被主学习率 `--lr` 设得过大时带偏 |
 
 三种常用运行方式：
 
@@ -186,8 +187,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
    这是当前默认设置，适合复现实验基线。
 
 2. **共享权重双向扫描，推荐默认实验设置**
-   `--bidirectional_layers 4 --bidirectional_fusion gate --bidirectional_share_mixer`
-   forward 和 backward 使用同一套 Mamba-2 mixer 参数，对原序列和反转序列各扫描一次，再通过门控融合；参数量基本不增加，但计算量约增加一次 Mamba scan。
+   `--bidirectional_layers 4 --bidirectional_fusion gate --bidirectional_share_mixer --bidirectional_lr 1e-4`
+   forward 和 backward 使用同一套 Mamba-2 mixer 参数，对原序列和反转序列各扫描一次，再通过门控融合；参数量基本不增加，但计算量约增加一次 Mamba scan。gate 初始化时偏向 forward 分支，使模型从原始单向 Mamba-2 热启动，再逐步学习反向上下文。
 
 3. **独立 backward mixer，容量更大但显存更高**
    `--bidirectional_layers 4 --bidirectional_fusion gate --no-bidirectional_share_mixer`

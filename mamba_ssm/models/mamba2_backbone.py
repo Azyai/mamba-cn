@@ -108,7 +108,7 @@ class Block(nn.Module):
         if fusion == "gate" and self.bidirectional_gate is None:
             self.bidirectional_gate = nn.Linear(self.d_model * 2, self.d_model, **factory_kwargs)
             nn.init.zeros_(self.bidirectional_gate.weight)
-            nn.init.zeros_(self.bidirectional_gate.bias)
+            nn.init.constant_(self.bidirectional_gate.bias, 4.0)
         elif fusion == "concat" and self.bidirectional_proj is None:
             self.bidirectional_proj = nn.Linear(self.d_model * 2, self.d_model, **factory_kwargs)
             nn.init.zeros_(self.bidirectional_proj.weight)
