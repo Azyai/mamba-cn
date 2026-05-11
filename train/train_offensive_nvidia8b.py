@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import random
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -16,10 +17,27 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from mamba_ssm.models.mamba2_backbone import Mamba2Backbone
 from mamba_ssm.models.offensive_classifier import MLPHead, MultimodalClassifier, masked_mean_pool
 from mamba_ssm.models.lora import LoRAConfig, inject_lora, lora_state_dict
 from sentencepiece_tokenizer import SentencePieceTokenizer, SentencePieceTokenizerConfig
+
+
+def require_bidirectional_backbone_support(backbone: Mamba2Backbone) -> None:
+    if hasattr(backbone, "enable_bidirectional_"):
+        return
+    module = sys.modules.get(type(backbone).__module__)
+    module_file = getattr(module, "__file__", "<unknown>")
+    raise RuntimeError(
+        "当前导入的 Mamba2Backbone 不支持双向扫描：缺少 enable_bidirectional_。"
+        "请确认服务器上的 mamba_ssm/models/mamba2_backbone.py 已同步到包含 "
+        "Bi-Mamba2 Context Enhancement Block 的最新版本，且没有导入旧的 pip/site-packages 版本。"
+        f" 当前导入位置: {module_file}"
+    )
 
 
 def set_seed(seed: int) -> None:
@@ -555,6 +573,7 @@ def main() -> None:
     backbone, load_info = Mamba2Backbone.load_pretrained(converted_dir, device=device, dtype=backbone_dtype, strict=False)
     backbone = backbone.to(device)
     if int(args.bidirectional_layers) > 0:
+        require_bidirectional_backbone_support(backbone)
         backbone.enable_bidirectional_(
             num_layers=int(args.bidirectional_layers),
             fusion=str(args.bidirectional_fusion),

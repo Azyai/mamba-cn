@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from mamba_ssm.models.lora import LoRAConfig, inject_lora, load_lora_state_dict
 from mamba_ssm.models.mamba2_backbone import Mamba2Backbone, Mamba2BackboneConfig
@@ -150,6 +155,14 @@ def _apply_bidirectional_config(backbone: Mamba2Backbone, config_dict: Dict[str,
     num_layers = int(config_dict.get("bidirectional_layers", 0) or 0)
     if num_layers <= 0:
         return
+    if not hasattr(backbone, "enable_bidirectional_"):
+        module = sys.modules.get(type(backbone).__module__)
+        module_file = getattr(module, "__file__", "<unknown>")
+        raise RuntimeError(
+            "当前导入的 Mamba2Backbone 不支持双向扫描：缺少 enable_bidirectional_。"
+            "请确认 mamba_ssm/models/mamba2_backbone.py 已同步到最新版本。"
+            f" 当前导入位置: {module_file}"
+        )
     backbone.enable_bidirectional_(
         num_layers=num_layers,
         fusion=str(config_dict.get("bidirectional_fusion", "gate")),
