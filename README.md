@@ -5,18 +5,18 @@
 建议先创建并激活 conda 环境，并安装 GPU 版 PyTorch（含 CUDA）。
 
 ```bash
-conda create -n mamba -y
+conda create -n mamba python=3.12 -y
 conda activate mamba
 
 # 根据你的 CUDA 版本选择合适的 pytorch/torchvision/torchaudio 组合
-conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia -y
+conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 mkl=2024.0.0 -c pytorch -c nvidia -y
+
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
 ```bash
 python -m pip install ".[train]"
 
-pip install "mamba-ssm[causal-conv1d]"
 
 # 图像处理所需依赖
 pip install pillow
@@ -25,9 +25,6 @@ pip install pillow
 pip install paddleocr paddlepaddle-gpu openai-whisper -i https://mirrors.aliyun.com/pypi/simple/
 # Linux 系统可能还需要安装 ffmpeg 以支持 whisper 音频解析
 # sudo apt-get install ffmpeg
-
-# 修复 Conda 环境下 PyTorch 可能出现的 libtorch_cpu.so: undefined symbol: iJIT_NotifyEvent 问题
-pip install mkl==2024.0.0
 ```
 
 RAG/Agent 可选依赖：
