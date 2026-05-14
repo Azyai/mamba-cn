@@ -134,9 +134,10 @@ def _run_prediction(
     rag_requested = _as_bool(data.get("rag_enabled"), app.rag_enabled_default)
     flags = _resolve_pipeline_flags(mode, rag_enabled=rag_requested)
     enable_ocr_asr = bool(flags["ocr_asr"])
-    rag_enabled = bool(flags["rag"]) and rag_retriever is not None
+    rag_pipeline_requested = bool(flags["rag"])
+    rag_available = rag_pipeline_requested and rag_retriever is not None
     rag_warning = None
-    if bool(flags["rag"]) and rag_retriever is None:
+    if rag_pipeline_requested and rag_retriever is None:
         rag_warning = "RAG index not loaded or unavailable"
 
     rag_top_k = int(data.get("rag_top_k", app.rag_top_k))
@@ -228,16 +229,18 @@ def _run_prediction(
         semantic_hints: List[Optional[object]] = [None] * num_inferences
         semantic_blocks: List[str] = [""] * num_inferences
         inference_texts = list(display_texts)
-        if rag_enabled and rag_retriever is not None:
+        if rag_pipeline_requested:
             for i in range(num_inferences):
-                req = RagRequest(
-                    query=display_texts[i],
-                    top_k=rag_top_k,
-                    with_rules=rag_with_rules,
-                    max_snippet_chars=200,
-                    min_score=rag_min_score,
-                )
-                rag_result = rag_retriever.query(req)
+                rag_result = None
+                if rag_available and rag_retriever is not None:
+                    req = RagRequest(
+                        query=display_texts[i],
+                        top_k=rag_top_k,
+                        with_rules=rag_with_rules,
+                        max_snippet_chars=200,
+                        min_score=rag_min_score,
+                    )
+                    rag_result = rag_retriever.query(req)
                 if not _rag_has_evidence(rag_result) and rag_with_rules and display_texts[i].strip():
                     hint = app.agent.normalize_for_detection(query=display_texts[i])
                     semantic_hints[i] = hint
@@ -249,18 +252,19 @@ def _run_prediction(
                         )
                         semantic_blocks[i] = semantic_block
                         enriched_query = display_texts[i] + "\n\n" + semantic_block
-                        rag_result = rag_retriever.query(
-                            RagRequest(
-                                query=enriched_query,
-                                top_k=rag_top_k,
-                                with_rules=rag_with_rules,
-                                max_snippet_chars=200,
-                                min_score=rag_min_score,
+                        if rag_available and rag_retriever is not None:
+                            rag_result = rag_retriever.query(
+                                RagRequest(
+                                    query=enriched_query,
+                                    top_k=rag_top_k,
+                                    with_rules=rag_with_rules,
+                                    max_snippet_chars=200,
+                                    min_score=rag_min_score,
+                                )
                             )
-                        )
 
                 rag_results[i] = rag_result
-                rag_context = _build_rag_context(rag_result, rag_context_max_chars)
+                rag_context = _build_rag_context(rag_result, rag_context_max_chars) if rag_result is not None else ""
                 rag_contexts[i] = rag_context
                 augmented_parts: List[str] = []
                 if semantic_blocks[i]:
@@ -328,7 +332,8 @@ def _run_prediction(
         out: Dict[str, Any] = {
             "n": num_inferences,
             "mode": mode,
-            "rag_enabled": bool(rag_enabled),
+            "rag_enabled": bool(rag_pipeline_requested),
+            "rag_available": bool(rag_available),
             "rag_warning": rag_warning,
             "threshold_mode": pred.threshold_mode,
             "threshold": pred.threshold,
@@ -344,7 +349,8 @@ def _run_prediction(
         }
         internal = {
             "mode": mode,
-            "rag_enabled": bool(rag_enabled),
+            "rag_enabled": bool(rag_pipeline_requested),
+            "rag_available": bool(rag_available),
             "rag_warning": rag_warning,
             "rag_results": rag_results,
             "semantic_hints": semantic_hints,
@@ -584,7 +590,7 @@ def make_handler(app: App):
                     fusion_score = result0.get("fusion_score")
                     fusion_label = result0.get("label", 0)
                     analysis = app.agent.analyze(
-                        query=internal.get("display_texts", [message])[0] if internal.get("display_texts") else message,
+                        query=internal.get("inference_texts", [message])[0] if internal.get("inference_texts") else message,
                         rag=rag_result,
                         model_score=model_score,
                         fusion_score=float(fusion_score) if fusion_score is not None else model_score,
@@ -601,7 +607,7 @@ def make_handler(app: App):
 
                     payload = {
                         "analysis": analysis.content,
-                        "analysis_mode": "rag" if rag_result is not None else "model",
+                        "analysis_mode": "rag" if internal.get("rag_enabled") else "model",
                         "agent_model": "辅助分析" if analysis.used_llm else "none",
                         "agent_latency_ms": analysis.latency_ms,
                         "agent_used_llm": analysis.used_llm,
@@ -609,6 +615,7 @@ def make_handler(app: App):
                         "pipeline": {
                             "mode": out.get("mode"),
                             "rag_enabled": out.get("rag_enabled"),
+                            "rag_available": out.get("rag_available"),
                             "rag_warning": out.get("rag_warning"),
                             "fusion_threshold": out.get("fusion_threshold"),
                             "fusion_weights": out.get("fusion_weights"),
@@ -667,6 +674,11 @@ def main() -> None:
 
     index_html = (Path(__file__).resolve().parent / "index.html").read_text(encoding="utf-8")
     agent_html = (Path(__file__).resolve().parent / "agent.html").read_text(encoding="utf-8")
+    rag_index_dir = str(args.rag_index_dir).strip()
+    if not rag_index_dir:
+        default_rag_index = Path(__file__).resolve().parents[2] / "rag_data" / "index"
+        if default_rag_index.exists():
+            rag_index_dir = str(default_rag_index)
     fusion_weights = FusionWeights(
         model=float(args.fusion_weight_model),
         bm25=float(args.fusion_weight_bm25),
@@ -681,7 +693,7 @@ def main() -> None:
         dtype=str(args.dtype),
         dataset_for_threshold=str(args.dataset_for_threshold),
         pretrained_dir=str(args.pretrained_dir) if str(args.pretrained_dir).strip() else None,
-        rag_index_dir=str(args.rag_index_dir) if str(args.rag_index_dir).strip() else None,
+        rag_index_dir=rag_index_dir if rag_index_dir else None,
         rag_device=str(args.rag_device),
         rag_top_k=int(args.rag_top_k),
         rag_enabled_default=bool(args.rag_enabled_default),

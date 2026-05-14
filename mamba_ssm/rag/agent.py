@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -74,6 +75,11 @@ def _build_semantic_normalize_prompt(query: str) -> str:
         "必须只输出一个 JSON 对象，不要输出 Markdown，不要输出解释性前后缀。\n"
         "JSON 字段固定为：applied(boolean), normalized_text(string), reason(string)。\n"
         "normalized_text 只写补全后的中文短句，不要重复原文；reason 用一句简短中文说明。\n\n"
+        "示例：\n"
+        "输入：你是不是222222b啊\n"
+        "{\"applied\":true,\"normalized_text\":\"你是不是傻逼啊\",\"reason\":\"连续数字 2 加 b 常用于规避 2B/傻逼 等辱骂表达。\"}\n"
+        "输入：今天天气不错\n"
+        "{\"applied\":false,\"normalized_text\":\"\",\"reason\":\"未发现隐晦攻击表达。\"}\n\n"
         f"输入：{query}"
     )
 
@@ -92,6 +98,63 @@ def _extract_json_object(text: str) -> Dict[str, object]:
     if not isinstance(parsed, dict):
         raise ValueError("LLM semantic hint response is not a JSON object")
     return parsed
+
+
+def _heuristic_semantic_hint(text: str) -> Optional[SemanticHint]:
+    s = str(text or "").strip()
+    if not s:
+        return None
+    compact = re.sub(r"\s+", "", s.lower())
+    if re.search(r"(?:2{2,}|二{2,}|2)\s*b", compact):
+        normalized = re.sub(r"(?:2{2,}|二{2,}|2)\s*b", "傻逼", s, flags=re.IGNORECASE)
+        return SemanticHint(
+            applied=True,
+            normalized_text=normalized,
+            reason="识别到数字和字母混写的常见辱骂规避表达。",
+            model="semantic-rule",
+            latency_ms=0.0,
+            used_llm=False,
+        )
+    if re.search(r"(^|[^a-z])s\s*b([^a-z]|$)", compact):
+        normalized = re.sub(r"s\s*b", "傻逼", s, flags=re.IGNORECASE)
+        return SemanticHint(
+            applied=True,
+            normalized_text=normalized,
+            reason="识别到拼音首字母缩写形式的辱骂表达。",
+            model="semantic-rule",
+            latency_ms=0.0,
+            used_llm=False,
+        )
+    return None
+
+
+def _has_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+def _template_analysis(
+    *,
+    model_score: float,
+    fusion_score: float,
+    fusion_label: int,
+    rag: Optional[RagQueryResult],
+) -> str:
+    verdict = "存在毒性或攻击性风险" if int(fusion_label) == 1 else "未达到毒性或攻击性判定阈值"
+    evidence = "检索证据为空，主要依据自训练模型得分判断。"
+    if rag is not None and (rag.hits or rag.rule_hits):
+        parts: List[str] = []
+        if rag.rule_hits:
+            parts.append("规则命中：" + "、".join(rag.rule_hits[:5]))
+        if rag.hits:
+            parts.append("检索命中：" + "；".join(f"{h.title}" for h in rag.hits[:3]))
+        evidence = "；".join(parts) + "。"
+    return (
+        f"结论：{verdict}。"
+        f"模型毒性概率为 {float(model_score):.4f}，融合分数为 {float(fusion_score):.4f}，融合标签为 {int(fusion_label)}。"
+        f"{evidence}"
+        "系统会优先把检索证据或语义补全追加给自训练基模，再依据基模与融合结果输出最终判断。"
+        "建议对命中的攻击性表达进行改写或人工复核。"
+    )
 
 
 class AgentClient:
@@ -167,11 +230,26 @@ class AgentClient:
 
         t0 = time.time()
         try:
-            response = self._client.invoke(prompt)
+            messages = [
+                (
+                    "system",
+                    "你必须始终使用简体中文回答。不要输出英文。不要提及第三方模型名称。"
+                    "如果用户内容有风险，请直接说明风险；如果无风险，也必须用中文说明。",
+                ),
+                ("human", prompt),
+            ]
+            response = self._client.invoke(messages)
             content = getattr(response, "content", str(response))
         except Exception as exc:
-            content = f"LLM call failed: {exc}"
+            content = f"辅助分析调用失败，已回退到模板分析：{exc}"
         dt = (time.time() - t0) * 1000.0
+        if not _has_cjk(str(content)):
+            content = _template_analysis(
+                model_score=float(model_score),
+                fusion_score=float(fusion_score),
+                fusion_label=int(fusion_label),
+                rag=rag,
+            )
         return AgentResponse(content=str(content), model=self.model, latency_ms=float(dt), used_llm=True)
 
     def normalize_for_detection(self, *, query: str) -> SemanticHint:
@@ -186,6 +264,10 @@ class AgentClient:
                 used_llm=False,
             )
 
+        heuristic = _heuristic_semantic_hint(text)
+        if heuristic is not None:
+            return heuristic
+
         if not self._enabled or self._client is None:
             return SemanticHint(
                 applied=False,
@@ -199,7 +281,14 @@ class AgentClient:
         prompt = _build_semantic_normalize_prompt(text)
         t0 = time.time()
         try:
-            response = self._client.invoke(prompt)
+            messages = [
+                (
+                    "system",
+                    "你只输出严格 JSON。你需要识别中文网络辱骂中的谐音、数字、字母和缩写规避表达。",
+                ),
+                ("human", prompt),
+            ]
+            response = self._client.invoke(messages)
             content = getattr(response, "content", str(response))
             parsed = _extract_json_object(str(content))
             applied = bool(parsed.get("applied", False))
@@ -207,6 +296,10 @@ class AgentClient:
             reason = str(parsed.get("reason", "") or "").strip()
             if not normalized_text:
                 applied = False
+            if not applied:
+                heuristic = _heuristic_semantic_hint(text)
+                if heuristic is not None:
+                    return heuristic
             if len(normalized_text) > 240:
                 normalized_text = normalized_text[:237] + "..."
             if len(reason) > 180:
