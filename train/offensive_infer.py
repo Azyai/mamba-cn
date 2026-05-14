@@ -400,6 +400,14 @@ def load_offensive_predictor(
 
         head_state = ckpt["head"]
         hidden_dim = _infer_head_hidden_dim(head_state)
+        input_dim = _infer_head_input_dim(head_state)
+        text_dim = int(config_dict.get("d_model", input_dim))
+        if text_dim != input_dim:
+            print(
+                f"WARNING: head input_dim {input_dim} != config d_model {text_dim}; "
+                "using head input_dim for classifier text_dim."
+            )
+            text_dim = input_dim
         tok = None
         max_length = int(ckpt.get("max_length", 256))
         if "tokenizer_model_path" in ckpt:
@@ -433,7 +441,6 @@ def load_offensive_predictor(
                 audio_backbone = Wav2Vec2Model.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
                 audio_backbone.eval()
 
-            input_dim = _infer_head_input_dim(head_state)
             head = MLPHead(d_model=input_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
             head.load_state_dict(head_state, strict=True)
             head.eval()
@@ -443,7 +450,7 @@ def load_offensive_predictor(
                 head=head,
                 image_backbone=image_backbone,
                 audio_backbone=audio_backbone,
-                text_dim=config_dict["d_model"],
+                text_dim=text_dim,
                 image_dim=768,
                 audio_dim=768
             ).to(dev, dtype=dt)
@@ -451,7 +458,7 @@ def load_offensive_predictor(
         else:
             image_processor = None
             audio_processor = None
-            head = MLPHead(d_model=int(config_dict["d_model"]), hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+            head = MLPHead(d_model=input_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
             head.load_state_dict(head_state, strict=True)
             head.eval()
             model = FrozenBackboneClassifier(backbone=backbone, head=head).to(dev, dtype=dt)
@@ -518,6 +525,14 @@ def load_offensive_predictor(
 
     head_state = ckpt["head"]
     hidden_dim = _infer_head_hidden_dim(head_state)
+    input_dim = _infer_head_input_dim(head_state)
+    text_dim = int(config_dict.get("d_model", input_dim))
+    if text_dim != input_dim:
+        print(
+            f"WARNING: head input_dim {input_dim} != config d_model {text_dim}; "
+            "using head input_dim for classifier text_dim."
+        )
+        text_dim = input_dim
     tok = None
     max_length = int(ckpt.get("max_length", 256))
     if "tokenizer_model_path" in ckpt:
@@ -551,7 +566,6 @@ def load_offensive_predictor(
             audio_backbone = Wav2Vec2Model.from_pretrained(ckpt["wav2vec2_name_or_path"], cache_dir=str((run_path.parent.parent / "predict/multimodal").resolve()), local_files_only=True).to(dev, dtype=dt)
             audio_backbone.eval()
 
-        input_dim = _infer_head_input_dim(head_state)
         head = MLPHead(d_model=input_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
         head.load_state_dict(head_state, strict=True)
         head.eval()
@@ -561,7 +575,7 @@ def load_offensive_predictor(
             head=head,
             image_backbone=image_backbone,
             audio_backbone=audio_backbone,
-            text_dim=config_dict["d_model"],
+            text_dim=text_dim,
             image_dim=768,
             audio_dim=768
         ).to(dev, dtype=dt)
@@ -569,7 +583,7 @@ def load_offensive_predictor(
     else:
         image_processor = None
         audio_processor = None
-        head = MLPHead(d_model=int(config_dict["d_model"]), hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
+        head = MLPHead(d_model=input_dim, hidden_dim=hidden_dim, dropout=0.0).to(dev, dtype=dt)
         head.load_state_dict(head_state, strict=True)
         head.eval()
         model = FrozenBackboneClassifier(backbone=backbone, head=head).to(dev, dtype=dt)

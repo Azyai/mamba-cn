@@ -230,9 +230,9 @@ python -m mamba_ssm.rag.build_index \
 ### 启用 RAG/Agent 的 Web Demo
 
 ```bash
-export QWEN_API_KEY=your_key
-export QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-export QWEN_MODEL=qwen-plus
+export DEEPSEEK_API_KEY=your_key
+export DEEPSEEK_BASE_URL=https://api.deepseek.com
+export DEEPSEEK_MODEL=deepseek-v4-pro
 
 CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
   --run_dir runs/lora_2_8b_multimodal \

@@ -15,6 +15,8 @@ class _KeywordMatcher:
         self._terms = [t for t in (normalize_text(t) for t in terms) if t]
         self._use_aho = False
         self._aho = None
+        if not self._terms:
+            return
         try:
             import ahocorasick  # type: ignore
 
@@ -29,15 +31,22 @@ class _KeywordMatcher:
             self._aho = None
 
     def find(self, text: str, *, max_hits: int = 20) -> List[str]:
+        if not self._terms:
+            return []
         s = normalize_text(text)
         if not s:
             return []
         if self._use_aho and self._aho is not None:
             hits = []
-            for _, term in self._aho.iter(s):
-                hits.append(term)
-                if len(hits) >= max_hits:
-                    break
+            try:
+                for _, term in self._aho.iter(s):
+                    hits.append(term)
+                    if len(hits) >= max_hits:
+                        break
+            except Exception:
+                self._use_aho = False
+                self._aho = None
+                hits = []
             return list(dict.fromkeys(hits))
         hits: List[str] = []
         for term in self._terms:

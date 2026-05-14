@@ -86,11 +86,11 @@ class AgentClient:
 
     @classmethod
     def from_env(cls) -> "AgentClient":
-        api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        base_url = os.getenv("QWEN_BASE_URL") or os.getenv("DASHSCOPE_BASE_URL")
-        model = os.getenv("QWEN_MODEL") or "qwen-plus"
-        timeout_s = float(os.getenv("QWEN_TIMEOUT_S", "20"))
-        temperature = float(os.getenv("QWEN_TEMPERATURE", "0.2"))
+        api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("DEEPSEEK_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.deepseek.com"
+        model = os.getenv("DEEPSEEK_MODEL") or "deepseek-chat"
+        timeout_s = float(os.getenv("DEEPSEEK_TIMEOUT_S", "20"))
+        temperature = float(os.getenv("DEEPSEEK_TEMPERATURE", "0.2"))
         return cls(model=model, api_key=api_key, base_url=base_url, timeout_s=timeout_s, temperature=temperature)
 
     @property
