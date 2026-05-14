@@ -52,10 +52,10 @@ def _build_rag_context(rag_result: "RagQueryResult", max_chars: int) -> str:
     for hit in rag_result.hits:
         lines.append(f"[{hit.doc_type}] {hit.title}: {hit.text_snippet}")
     if rag_result.rule_hits:
-        lines.append("Rules matched: " + ", ".join(rag_result.rule_hits))
+        lines.append("规则命中：" + ", ".join(rag_result.rule_hits))
     if not lines:
         return ""
-    text = "Retrieved evidence:\n" + "\n".join(lines)
+    text = "检索到的证据：\n" + "\n".join(lines)
     if len(text) <= max_chars:
         return text
     return text[: max(0, max_chars - 3)] + "..."
@@ -543,6 +543,7 @@ def make_handler(app: App):
 
                     payload = {
                         "analysis": analysis.content,
+                        "analysis_mode": "rag" if rag_result is not None else "model",
                         "agent_model": analysis.model,
                         "agent_latency_ms": analysis.latency_ms,
                         "agent_used_llm": analysis.used_llm,

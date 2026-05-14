@@ -6,206 +6,336 @@
     <title>Agent Toxicity Analyst</title>
     <style>
       :root {
-        --bg: #f4f1ec;
-        --panel: rgba(255, 255, 255, 0.88);
-        --panel-strong: rgba(255, 255, 255, 0.96);
-        --ink: #1b1b1f;
-        --muted: rgba(27, 27, 31, 0.64);
-        --accent: #ff6a00;
+        --bg: #f4efe6;
+        --bg-2: #efe6d8;
+        --panel: rgba(255, 255, 255, 0.76);
+        --panel-strong: rgba(255, 255, 255, 0.92);
+        --ink: #171717;
+        --muted: rgba(23, 23, 23, 0.62);
+        --line: rgba(23, 23, 23, 0.1);
+        --accent: #b45a20;
         --accent-2: #0f766e;
-        --line: rgba(0, 0, 0, 0.08);
-        --shadow: 0 22px 60px rgba(0, 0, 0, 0.12);
-        --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.08);
+        --accent-3: #1d4ed8;
+        --danger: #dc2626;
+        --shadow: 0 24px 70px rgba(25, 18, 11, 0.12);
+        --shadow-soft: 0 12px 34px rgba(25, 18, 11, 0.08);
       }
 
       * { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; min-height: 100%; }
+      html, body { margin: 0; min-height: 100%; }
       body {
-        font-family: "IBM Plex Sans", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+        font-family: "Segoe UI Variable", "Aptos", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
         color: var(--ink);
         background:
-          radial-gradient(1200px 600px at 15% 10%, rgba(255, 106, 0, 0.16), rgba(255, 106, 0, 0) 60%),
-          radial-gradient(1000px 700px at 85% 0%, rgba(15, 118, 110, 0.14), rgba(15, 118, 110, 0) 60%),
-          var(--bg);
+          radial-gradient(circle at 15% 10%, rgba(180, 90, 32, 0.18), transparent 32%),
+          radial-gradient(circle at 85% 0%, rgba(15, 118, 110, 0.14), transparent 28%),
+          linear-gradient(180deg, #faf6ef 0%, #f4efe6 48%, #efe6d8 100%);
       }
 
-      .container {
-        max-width: 1280px;
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(23, 23, 23, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(23, 23, 23, 0.03) 1px, transparent 1px);
+        background-size: 48px 48px;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.35), transparent 82%);
+      }
+
+      .shell {
+        max-width: 1400px;
         margin: 0 auto;
-        padding: 28px 20px 60px;
+        padding: 28px 20px 56px;
+        position: relative;
+        z-index: 1;
       }
 
-      .topbar {
+      .hero {
         display: flex;
-        align-items: center;
+        flex-wrap: wrap;
+        gap: 18px;
         justify-content: space-between;
-        gap: 16px;
-      }
-
-      .title {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-
-      .title h1 {
-        margin: 0;
-        font-size: 26px;
-        letter-spacing: -0.02em;
-      }
-
-      .title p { margin: 0; color: var(--muted); font-size: 13px; }
-
-      .btn {
+        align-items: flex-end;
+        padding: 22px 22px 18px;
         border: 1px solid var(--line);
-        background: var(--panel-strong);
-        padding: 8px 12px;
-        border-radius: 12px;
-        cursor: pointer;
+        border-radius: 28px;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.66));
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+      }
+
+      .hero-copy {
+        max-width: 780px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        width: fit-content;
+        border-radius: 999px;
+        padding: 6px 10px;
+        background: rgba(180, 90, 32, 0.12);
+        border: 1px solid rgba(180, 90, 32, 0.18);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(30px, 4vw, 46px);
+        line-height: 1.02;
+        letter-spacing: -0.04em;
+      }
+
+      .lead {
+        margin: 0;
+        max-width: 68ch;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 11px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.82);
+        color: var(--muted);
+        font-size: 12px;
         box-shadow: var(--shadow-soft);
-        text-decoration: none;
-        color: var(--ink);
-        font-size: 13px;
       }
 
       .layout {
         margin-top: 18px;
         display: grid;
-        grid-template-columns: 340px 1fr;
+        grid-template-columns: 370px minmax(0, 1fr);
         gap: 16px;
       }
 
       .panel {
         background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 18px;
+        border-radius: 24px;
         box-shadow: var(--shadow);
-        padding: 16px;
         backdrop-filter: blur(16px);
+        padding: 18px;
       }
 
       .panel h2 {
-        font-size: 14px;
-        margin: 0 0 10px;
+        margin: 0 0 12px;
+        font-size: 13px;
+        letter-spacing: 0.12em;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
         color: var(--muted);
       }
 
-      .section {
-        display: grid;
-        gap: 10px;
-        margin-bottom: 14px;
+      .panel-stack { display: grid; gap: 16px; }
+
+      .mode-grid { display: grid; gap: 12px; }
+
+      .mode-card {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.8);
+        border-radius: 20px;
+        padding: 16px;
+        text-align: left;
+        cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+        box-shadow: var(--shadow-soft);
       }
+
+      .mode-card:hover {
+        transform: translateY(-1px);
+        border-color: rgba(180, 90, 32, 0.28);
+      }
+
+      .mode-card.active {
+        border-color: rgba(180, 90, 32, 0.38);
+        background: linear-gradient(180deg, rgba(255, 248, 240, 0.98), rgba(255, 255, 255, 0.86));
+        box-shadow: 0 16px 34px rgba(180, 90, 32, 0.12);
+      }
+
+      .mode-card-title {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 8px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .mode-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        background: rgba(15, 118, 110, 0.12);
+        color: var(--accent-2);
+      }
+
+      .badge.warn {
+        background: rgba(180, 90, 32, 0.12);
+        color: var(--accent);
+      }
+
+      .compact-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .stat {
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.78);
+        padding: 12px;
+        display: grid;
+        gap: 6px;
+      }
+
+      .stat .label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .stat .value {
+        font-size: 20px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+
+      .stat .sub {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      details {
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: var(--shadow-soft);
+        overflow: hidden;
+      }
+
+      summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 14px 16px;
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      summary::-webkit-details-marker { display: none; }
+
+      .details-inner {
+        padding: 0 16px 16px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .form-grid { display: grid; gap: 10px; }
 
       label {
         display: grid;
         gap: 6px;
-        font-size: 12px;
         color: var(--muted);
+        font-size: 12px;
       }
 
-      select, input[type="number"], textarea {
+      select,
+      input[type="number"],
+      textarea {
         width: 100%;
-        border-radius: 12px;
         border: 1px solid var(--line);
-        padding: 8px 10px;
-        font-size: 13px;
+        border-radius: 14px;
         background: var(--panel-strong);
         color: var(--ink);
+        padding: 10px 12px;
+        font-size: 13px;
+        outline: none;
       }
 
-      input[type="checkbox"] { transform: translateY(1px); }
+      select:focus,
+      input[type="number"]:focus,
+      textarea:focus {
+        border-color: rgba(180, 90, 32, 0.34);
+        box-shadow: 0 0 0 4px rgba(180, 90, 32, 0.1);
+      }
 
       .checkbox-row {
         display: flex;
         align-items: center;
         gap: 8px;
-        font-size: 12px;
+        font-size: 13px;
         color: var(--muted);
       }
 
-      .chat {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        height: 100%;
-      }
+      .checkbox-row input { transform: translateY(1px); }
 
-      .messages {
-        flex: 1;
-        min-height: 360px;
-        max-height: 520px;
-        overflow-y: auto;
+      .workspace {
         display: grid;
-        gap: 12px;
+        gap: 16px;
       }
 
-      .msg {
-        padding: 12px 14px;
-        border-radius: 14px;
-        border: 1px solid var(--line);
-        background: var(--panel-strong);
-        font-size: 14px;
-        line-height: 1.5;
+      .banner {
+        border-radius: 20px;
+        padding: 14px 16px;
+        border: 1px solid rgba(15, 118, 110, 0.18);
+        background: rgba(15, 118, 110, 0.08);
+        color: var(--ink);
+        line-height: 1.55;
+        font-size: 13px;
       }
 
-      .msg.user {
-        border-color: rgba(255, 106, 0, 0.4);
-        background: rgba(255, 106, 0, 0.12);
+      .banner.loading {
+        border-color: rgba(180, 90, 32, 0.18);
+        background: rgba(180, 90, 32, 0.08);
       }
 
-      .msg.agent {
-        border-color: rgba(15, 118, 110, 0.4);
-        background: rgba(15, 118, 110, 0.12);
-      }
-
-      .composer {
-        display: grid;
-        gap: 10px;
-      }
-
-      .composer textarea {
-        min-height: 90px;
-        resize: vertical;
-      }
-
-      .composer-row {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        align-items: center;
-      }
-
-      .btn.primary {
-        background: linear-gradient(150deg, rgba(255, 106, 0, 0.92), rgba(255, 146, 10, 0.92));
-        border-color: rgba(255, 106, 0, 0.35);
-        color: white;
-      }
-
-      .hint {
-        font-size: 12px;
-        color: var(--muted);
-      }
-
-      .progress-wrap {
-        display: grid;
-        gap: 8px;
-      }
+      .progress-wrap { display: grid; gap: 8px; }
 
       .progress-bar {
         width: 100%;
         height: 10px;
         border-radius: 999px;
         overflow: hidden;
-        background: rgba(0, 0, 0, 0.06);
+        background: rgba(23, 23, 23, 0.07);
       }
 
       .progress-fill {
         width: 0%;
         height: 100%;
         border-radius: 999px;
-        background: linear-gradient(90deg, rgba(255, 106, 0, 0.92), rgba(15, 118, 110, 0.92));
+        background: linear-gradient(90deg, rgba(180, 90, 32, 0.96), rgba(15, 118, 110, 0.92));
         transition: width 0.25s ease;
       }
 
@@ -217,143 +347,350 @@
         color: var(--muted);
       }
 
-      .banner {
-        border: 1px solid rgba(15, 118, 110, 0.18);
-        background: rgba(15, 118, 110, 0.08);
-        color: var(--ink);
-        padding: 10px 12px;
-        border-radius: 14px;
-        font-size: 13px;
-        line-height: 1.5;
-      }
-
-      .banner.loading {
-        border-color: rgba(255, 106, 0, 0.18);
-        background: rgba(255, 106, 0, 0.08);
-      }
-
-      .evidence {
+      .result-grid {
         display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 12px;
+      }
+
+      .result-card {
+        border-radius: 22px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.8);
+        padding: 16px;
+        box-shadow: var(--shadow-soft);
+        display: grid;
+        gap: 12px;
+      }
+
+      .result-card.lead {
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 251, 246, 0.82));
+      }
+
+      .result-card h3 {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: -0.02em;
+      }
+
+      .result-card p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+        font-size: 14px;
+        white-space: pre-wrap;
+      }
+
+      .result-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .result-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        background: rgba(180, 90, 32, 0.12);
+        color: var(--accent);
+        border: 1px solid rgba(180, 90, 32, 0.18);
+      }
+
+      .result-meta {
+        display: flex;
+        flex-wrap: wrap;
         gap: 8px;
       }
 
-      .chip {
-        padding: 6px 10px;
-        border-radius: 999px;
-        border: 1px solid var(--line);
-        font-size: 12px;
-        color: var(--muted);
-        background: var(--panel-strong);
+      .meta-chip {
         display: inline-flex;
         align-items: center;
         gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.84);
+        color: var(--muted);
+        font-size: 12px;
       }
+
+      .analysis-box { display: grid; gap: 10px; }
+
+      .evidence-panel { display: grid; gap: 10px; }
+
+      .evidence-list { display: grid; gap: 8px; }
 
       .evidence-item {
-        border: 1px dashed var(--line);
-        border-radius: 12px;
-        padding: 10px;
-        font-size: 12px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.8);
+        padding: 12px;
         color: var(--muted);
-        background: rgba(255, 255, 255, 0.6);
+        font-size: 12px;
+        line-height: 1.55;
       }
 
-      @media (max-width: 980px) {
+      .evidence-item strong { color: var(--ink); }
+
+      .messages {
+        display: grid;
+        gap: 12px;
+      }
+
+      .msg {
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.84);
+        padding: 14px 16px;
+        box-shadow: var(--shadow-soft);
+      }
+
+      .msg-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
+      .msg-role {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .msg.user {
+        border-color: rgba(180, 90, 32, 0.26);
+        background: rgba(180, 90, 32, 0.08);
+      }
+
+      .msg.agent {
+        border-color: rgba(15, 118, 110, 0.24);
+        background: rgba(15, 118, 110, 0.08);
+      }
+
+      .msg-body {
+        color: var(--ink);
+        line-height: 1.65;
+        white-space: pre-wrap;
+        font-size: 14px;
+      }
+
+      .composer { display: grid; gap: 12px; }
+
+      .composer textarea {
+        min-height: 118px;
+        resize: vertical;
+      }
+
+      .composer-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .btn {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.88);
+        padding: 10px 14px;
+        border-radius: 14px;
+        cursor: pointer;
+        color: var(--ink);
+        box-shadow: var(--shadow-soft);
+        text-decoration: none;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+      }
+
+      .btn:hover {
+        transform: translateY(-1px);
+        border-color: rgba(180, 90, 32, 0.26);
+      }
+
+      .btn:active { transform: translateY(0); }
+
+      .btn.primary {
+        background: linear-gradient(145deg, rgba(180, 90, 32, 0.96), rgba(230, 128, 53, 0.96));
+        color: white;
+        border-color: rgba(180, 90, 32, 0.34);
+      }
+
+      .btn.ghost { background: rgba(255, 255, 255, 0.64); }
+
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        min-height: 1em;
+      }
+
+      .file-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.82);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .file-pill strong { color: var(--ink); }
+
+      .file-pill button {
+        border: none;
+        background: transparent;
+        color: var(--accent);
+        cursor: pointer;
+        font: inherit;
+        padding: 0;
+      }
+
+      .hidden { display: none !important; }
+
+      .is-disabled { opacity: 0.6; filter: saturate(0.8); }
+
+      @media (max-width: 1100px) {
         .layout { grid-template-columns: 1fr; }
-        .messages { max-height: 420px; }
+        .result-grid { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 720px) {
+        .shell { padding: 18px 14px 40px; }
+        .hero { padding: 18px; border-radius: 22px; }
+        .panel { padding: 16px; border-radius: 20px; }
+        .compact-grid { grid-template-columns: 1fr; }
       }
     </style>
   </head>
   <body>
-    <div class="container">
-      <div class="topbar">
-        <div class="title">
+    <div class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <div class="kicker">Agent · Toxicity analysis studio</div>
           <h1>Agent Toxicity Analyst</h1>
-          <p>对话式分析 + RAG 证据 + 融合判定</p>
+          <p class="lead">把多模态模型直答与默认 RAG 检索分成两条路径展示。模型模式用于查看原始判断，RAG 模式默认携带检索证据与规则命中，并返回中文分析段落。</p>
+          <div class="hero-meta">
+            <span class="chip" id="statusChip">状态：初始化</span>
+            <span class="chip" id="pipelineChip">模式：默认 RAG + 规则</span>
+            <span class="chip" id="sourceChip">分析：待返回</span>
+          </div>
         </div>
-        <div style="display:flex; gap:10px; align-items:center;">
-          <a class="btn" href="/">返回检测页</a>
-          <span class="chip" id="statusChip">状态：初始化</span>
-        </div>
-      </div>
+        <a class="btn ghost" href="/">返回检测页</a>
+      </header>
 
       <div class="layout">
-        <div class="panel">
-          <h2>Pipeline</h2>
-          <div class="section">
-            <label>
-              模式
-              <select id="mode">
-                <option value="baseline">baseline（仅模型）</option>
-                <option value="ocr_asr">OCR/ASR（文本增强）</option>
-                <option value="ocr_asr_rag" selected>OCR/ASR + RAG</option>
-              </select>
-            </label>
-            <div class="checkbox-row">
-              <input type="checkbox" id="ragEnabled" checked />
-              <span>启用 RAG</span>
-            </div>
-            <div class="checkbox-row">
-              <input type="checkbox" id="ragAugment" checked />
-              <span>追加检索证据到模型输入</span>
-            </div>
-          </div>
-
-          <h2>RAG Settings</h2>
-          <div class="section">
-            <label>
-              TopK
-              <input id="ragTopK" type="number" min="1" max="20" step="1" value="5" />
-            </label>
-            <label>
-              MinScore
-              <input id="ragMinScore" type="number" min="0" max="1" step="0.01" value="0" />
-            </label>
-            <label>
-              上下文最大字符
-              <input id="ragContextMaxChars" type="number" min="120" max="2000" step="10" value="480" />
-            </label>
-            <div class="checkbox-row">
-              <input type="checkbox" id="ragWithRules" checked />
-              <span>规则命中参与</span>
+        <aside class="panel panel-stack">
+          <div>
+            <h2>分析模式</h2>
+            <div class="mode-grid">
+              <button type="button" class="mode-card active" data-mode="baseline">
+                <div class="mode-card-title">
+                  <span>多模态模型直答</span>
+                  <span class="badge warn">模型本身</span>
+                </div>
+                <p>直接调用模型自身的多模态理解能力，不追加检索证据，适合先看原始判断。</p>
+              </button>
+              <button type="button" class="mode-card" data-mode="rag">
+                <div class="mode-card-title">
+                  <span>默认 RAG + 规则</span>
+                  <span class="badge">默认开启</span>
+                </div>
+                <p>默认启用 OCR/ASR、RAG 和规则命中，将检索证据融入判断，并返回中文分析段落。</p>
+              </button>
             </div>
           </div>
 
-          <h2>Fusion</h2>
-          <div class="section">
-            <label>
-              Fusion 阈值
-              <input id="fusionThreshold" type="number" min="0" max="1" step="0.01" value="0.5" />
-            </label>
-            <label>
-              w_model
-              <input id="fusionModel" type="number" min="0" max="1" step="0.01" value="0.6" />
-            </label>
-            <label>
-              w_bm25
-              <input id="fusionBm25" type="number" min="0" max="1" step="0.01" value="0.2" />
-            </label>
-            <label>
-              w_vector
-              <input id="fusionVector" type="number" min="0" max="1" step="0.01" value="0.15" />
-            </label>
-            <label>
-              w_rule
-              <input id="fusionRule" type="number" min="0" max="1" step="0.01" value="0.05" />
-            </label>
+          <div class="compact-grid">
+            <div class="stat">
+              <span class="label">模型分数</span>
+              <span class="value" id="inspectModelScore">0.0000</span>
+              <span class="sub">当前样本的毒性概率</span>
+            </div>
+            <div class="stat">
+              <span class="label">融合分数</span>
+              <span class="value" id="inspectFusionScore">0.0000</span>
+              <span class="sub">RAG 模式下的综合判断</span>
+            </div>
+            <div class="stat">
+              <span class="label">判定标签</span>
+              <span class="value" id="inspectLabel">0</span>
+              <span class="sub">0=正常，1=有毒</span>
+            </div>
+            <div class="stat">
+              <span class="label">分析来源</span>
+              <span class="value" id="inspectSource">-</span>
+              <span class="sub">模型或检索增强回答</span>
+            </div>
           </div>
 
-          <h2>Inspector</h2>
-          <div class="section">
-            <div class="chip" id="inspectScore">model=0.000 | fusion=0.000</div>
-            <div class="chip" id="inspectLabel">label=0</div>
-            <div class="evidence" id="evidenceList"></div>
-          </div>
-        </div>
+          <details id="ragAdvanced" open>
+            <summary>高级参数</summary>
+            <div class="details-inner">
+              <div class="form-grid">
+                <label>
+                  RAG TopK
+                  <input data-rag-control id="ragTopK" type="number" min="1" max="20" step="1" value="5" />
+                </label>
+                <label>
+                  MinScore
+                  <input data-rag-control id="ragMinScore" type="number" min="0" max="1" step="0.01" value="0" />
+                </label>
+                <label>
+                  上下文最大字符
+                  <input data-rag-control id="ragContextMaxChars" type="number" min="120" max="2000" step="10" value="480" />
+                </label>
+                <div class="checkbox-row">
+                  <input data-rag-control type="checkbox" id="ragWithRules" checked />
+                  <span>规则命中参与</span>
+                </div>
+                <div class="checkbox-row">
+                  <input data-rag-control type="checkbox" id="ragAugment" checked />
+                  <span>追加检索证据到模型输入</span>
+                </div>
+              </div>
+            </div>
+          </details>
 
-        <div class="panel chat">
+          <details id="fusionAdvanced">
+            <summary>融合参数</summary>
+            <div class="details-inner">
+              <div class="form-grid">
+                <label>
+                  Fusion 阈值
+                  <input id="fusionThreshold" type="number" min="0" max="1" step="0.01" value="0.5" />
+                </label>
+                <label>
+                  w_model
+                  <input id="fusionModel" type="number" min="0" max="1" step="0.01" value="0.6" />
+                </label>
+                <label>
+                  w_bm25
+                  <input id="fusionBm25" type="number" min="0" max="1" step="0.01" value="0.2" />
+                </label>
+                <label>
+                  w_vector
+                  <input id="fusionVector" type="number" min="0" max="1" step="0.01" value="0.15" />
+                </label>
+                <label>
+                  w_rule
+                  <input id="fusionRule" type="number" min="0" max="1" step="0.01" value="0.05" />
+                </label>
+              </div>
+            </div>
+          </details>
+        </aside>
+
+        <section class="panel workspace">
           <div class="banner loading" id="loadBanner">模型正在加载中，页面已就绪，等待状态检查完成后即可发送分析。</div>
-          <div class="progress-wrap" style="margin-top:10px;">
+
+          <div class="progress-wrap">
             <div class="progress-bar" aria-hidden="true">
               <div class="progress-fill" id="loadProgressFill"></div>
             </div>
@@ -362,36 +699,95 @@
               <span id="loadStageText">初始化</span>
             </div>
           </div>
-          <div class="messages" id="messages"></div>
+
+          <div class="result-grid">
+            <article class="result-card lead">
+              <div class="result-head">
+                <div class="analysis-box">
+                  <span class="result-eyebrow" id="analysisBadge">模型直答</span>
+                  <h3 id="analysisTitle">等待输入</h3>
+                </div>
+                <div class="result-meta" id="analysisMetaChips"></div>
+              </div>
+              <p id="analysisText">在这里会显示中文分析结果。</p>
+            </article>
+
+            <article class="result-card">
+              <div class="result-head">
+                <div>
+                  <span class="result-eyebrow">判定数据</span>
+                  <h3>模型与融合</h3>
+                </div>
+                <div class="result-meta" id="resultMetaChips"></div>
+              </div>
+            </article>
+          </div>
+
+          <div class="evidence-panel">
+            <article class="result-card">
+              <div class="result-head">
+                <div>
+                  <span class="result-eyebrow">检索证据</span>
+                  <h3>RAG 证据与规则</h3>
+                </div>
+              </div>
+              <div class="evidence-list" id="evidenceList"></div>
+            </article>
+          </div>
+
+          <section class="messages" id="messages"></section>
+
           <div class="composer">
-            <textarea id="input" placeholder="输入需要分析的内容...\n支持文本 + 可选图片/音频"></textarea>
+            <textarea id="input" placeholder="输入需要分析的内容...\n支持文本、图片或音频，文本可以留空只上传多模态文件。"></textarea>
             <div class="composer-row">
-              <label class="btn" style="padding:6px 10px;">
+              <label class="btn ghost" style="padding: 10px 14px;">
                 上传图片
-                <input id="imageUpload" type="file" accept="image/*" style="display:none;" />
+                <input id="imageUpload" type="file" accept="image/*" class="hidden" />
               </label>
-              <label class="btn" style="padding:6px 10px;">
+              <label class="btn ghost" style="padding: 10px 14px;">
                 上传音频
-                <input id="audioUpload" type="file" accept="audio/*" style="display:none;" />
+                <input id="audioUpload" type="file" accept="audio/*" class="hidden" />
               </label>
               <button class="btn primary" id="send">发送分析</button>
               <button class="btn" id="clear">清空</button>
               <span class="hint" id="hint"></span>
             </div>
+            <div class="composer-row" id="filePills"></div>
           </div>
-        </div>
+        </section>
       </div>
     </div>
 
     <script>
+      const state = {
+        mode: "rag",
+        lastPipeline: null,
+      };
+
       function esc(s) {
-        return (s || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+        return String(s ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
       }
 
-      function addMessage(role, text) {
-        const el = document.createElement("div");
+      function fmtNumber(value, digits = 4) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num.toFixed(digits) : (0).toFixed(digits);
+      }
+
+      function addMessage(role, title, text, meta) {
+        const el = document.createElement("article");
         el.className = `msg ${role}`;
-        el.innerHTML = esc(text).replaceAll("\n", "<br/>");
+        const metaHtml = meta ? `<span class="badge">${esc(meta)}</span>` : "";
+        el.innerHTML = `
+          <div class="msg-head">
+            <div class="msg-role">${esc(title)}</div>
+            ${metaHtml}
+          </div>
+          <div class="msg-body">${esc(text)}</div>
+        `;
         const box = document.getElementById("messages");
         box.appendChild(el);
         box.scrollTop = box.scrollHeight;
@@ -426,26 +822,122 @@
         });
       }
 
-      function setInspector(result) {
+      function currentBackendMode() {
+        return state.mode === "baseline" ? "baseline" : "ocr_asr_rag";
+      }
+
+      function syncModeUI(mode) {
+        state.mode = mode;
+        const ragEnabled = mode !== "baseline";
+        document.querySelectorAll("[data-mode]").forEach(btn => {
+          btn.classList.toggle("active", btn.dataset.mode === mode);
+        });
+
+        document.getElementById("pipelineChip").textContent = ragEnabled ? "模式：默认 RAG + 规则" : "模式：多模态模型直答";
+        document.getElementById("sourceChip").textContent = ragEnabled ? "分析：检索增强" : "分析：模型直答";
+
+        const ragPanel = document.getElementById("ragAdvanced");
+        ragPanel.classList.toggle("is-disabled", !ragEnabled);
+        document.querySelectorAll("[data-rag-control]").forEach(node => {
+          if ("disabled" in node) {
+            node.disabled = !ragEnabled;
+          }
+        });
+
+        if (!ragEnabled) {
+          document.getElementById("ragAugment").checked = false;
+          document.getElementById("ragWithRules").checked = false;
+        } else {
+          document.getElementById("ragAugment").checked = true;
+          document.getElementById("ragWithRules").checked = true;
+        }
+      }
+
+      function renderFilePills() {
+        const wrap = document.getElementById("filePills");
+        const img = document.getElementById("imageUpload").files[0];
+        const aud = document.getElementById("audioUpload").files[0];
+        const pills = [];
+
+        if (img) {
+          pills.push(`<span class="file-pill"><strong>图片</strong>${esc(img.name)}<button type="button" data-clear-file="image">移除</button></span>`);
+        }
+        if (aud) {
+          pills.push(`<span class="file-pill"><strong>音频</strong>${esc(aud.name)}<button type="button" data-clear-file="audio">移除</button></span>`);
+        }
+        wrap.innerHTML = pills.join("");
+        wrap.querySelectorAll("[data-clear-file]").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const target = btn.getAttribute("data-clear-file");
+            if (target === "image") {
+              document.getElementById("imageUpload").value = "";
+            }
+            if (target === "audio") {
+              document.getElementById("audioUpload").value = "";
+            }
+            renderFilePills();
+          });
+        });
+      }
+
+      function renderInspector(result, pipeline, analysisMode) {
         if (!result) return;
+
         const modelScore = typeof result.p_toxic === "number" ? result.p_toxic : 0;
-        const fusionScore = result.fusion_score != null ? result.fusion_score : modelScore;
-        document.getElementById("inspectScore").textContent = `model=${modelScore.toFixed(4)} | fusion=${Number(fusionScore).toFixed(4)}`;
-        document.getElementById("inspectLabel").textContent = `label=${result.label}`;
+        const fusionScore = result.fusion_score != null ? Number(result.fusion_score) : modelScore;
+        const label = result.label != null ? result.label : 0;
+        const modelLabel = result.model_label != null ? result.model_label : label;
+
+        document.getElementById("inspectModelScore").textContent = fmtNumber(modelScore);
+        document.getElementById("inspectFusionScore").textContent = fmtNumber(fusionScore);
+        document.getElementById("inspectLabel").textContent = String(label);
+        document.getElementById("inspectSource").textContent = analysisMode === "rag" ? "RAG 中文分析" : "模型直答";
+
+        const metaChips = document.getElementById("resultMetaChips");
+        metaChips.innerHTML = [
+          `<span class="meta-chip">p_toxic ${fmtNumber(modelScore)}</span>`,
+          `<span class="meta-chip">fusion ${fmtNumber(fusionScore)}</span>`,
+          `<span class="meta-chip">label ${esc(label)}</span>`,
+          `<span class="meta-chip">model ${esc(modelLabel)}</span>`,
+        ].join("");
+
+        const analysisChips = document.getElementById("analysisMetaChips");
+        analysisChips.innerHTML = [
+          `<span class="meta-chip">模式 ${esc(analysisMode === "rag" ? "RAG" : "模型")}</span>`,
+          `<span class="meta-chip">阈值 ${fmtNumber(pipeline && pipeline.fusion_threshold != null ? pipeline.fusion_threshold : 0.5)}</span>`,
+          `<span class="meta-chip">LLM ${esc(result.agent_used_llm ? "已启用" : "模板")}</span>`,
+        ].join("");
+
+        const badge = document.getElementById("analysisBadge");
+        const title = document.getElementById("analysisTitle");
+        const text = document.getElementById("analysisText");
+        badge.textContent = analysisMode === "rag" ? "RAG 中文分析" : "模型直答";
+        title.textContent = analysisMode === "rag" ? "默认 RAG + 规则检索" : "多模态模型本身能力";
+        text.textContent = result.analysis_text || result.analysis || "暂无分析结果";
 
         const evidence = document.getElementById("evidenceList");
         evidence.innerHTML = "";
-        if (result.rag && result.rag.hits && result.rag.hits.length) {
+        if (analysisMode === "rag" && result.rag && Array.isArray(result.rag.hits) && result.rag.hits.length) {
+          if (Array.isArray(result.rag.rule_hits) && result.rag.rule_hits.length) {
+            const ruleDiv = document.createElement("div");
+            ruleDiv.className = "evidence-item";
+            ruleDiv.innerHTML = `<strong>规则命中：</strong>${esc(result.rag.rule_hits.join("、"))}`;
+            evidence.appendChild(ruleDiv);
+          }
+
           result.rag.hits.slice(0, 5).forEach(hit => {
             const div = document.createElement("div");
             div.className = "evidence-item";
-            div.textContent = `[${hit.doc_type}] ${hit.title}: ${hit.text_snippet}`;
+            div.innerHTML = `
+              <strong>[${esc(hit.doc_type)}] ${esc(hit.title)}</strong><br />
+              ${esc(hit.text_snippet)}
+            `;
             evidence.appendChild(div);
           });
         } else {
           const div = document.createElement("div");
           div.className = "evidence-item";
-          div.textContent = "暂无检索证据";
+          div.textContent = analysisMode === "rag" ? "未返回可展示的检索证据。" : "当前是模型直答模式，不显示检索结果。";
           evidence.appendChild(div);
         }
       }
@@ -475,66 +967,84 @@
       async function sendMessage() {
         const input = document.getElementById("input");
         const message = input.value.trim();
-        if (!message) {
-          document.getElementById("hint").textContent = "请输入文本内容";
-          return;
-        }
-        document.getElementById("hint").textContent = "";
-        addMessage("user", message);
-        input.value = "";
-
         const imgFile = document.getElementById("imageUpload").files[0];
         const audFile = document.getElementById("audioUpload").files[0];
+
+        if (!message && !imgFile && !audFile) {
+          document.getElementById("hint").textContent = "请输入文本，或至少上传图片/音频";
+          return;
+        }
+
+        document.getElementById("hint").textContent = "";
+        const summary = [
+          message ? `文本：${message}` : null,
+          imgFile ? `图片：${imgFile.name}` : null,
+          audFile ? `音频：${audFile.name}` : null,
+        ].filter(Boolean).join(" ｜ ");
+
+        addMessage("user", "用户输入", summary || "未填写文本", state.mode === "baseline" ? "模型直答" : "默认 RAG");
+        input.value = "";
+
         const image_b64 = imgFile ? await fileToBase64(imgFile) : "";
         const audio_b64 = audFile ? await fileToBase64(audFile) : "";
-
-        const mode = document.getElementById("mode").value;
-        const ragEnabled = document.getElementById("ragEnabled").checked;
-        const ragAugment = document.getElementById("ragAugment").checked;
+        const ragEnabled = state.mode !== "baseline";
         const ragTopK = parseInt(document.getElementById("ragTopK").value || "5", 10);
         const ragMinScore = parseFloat(document.getElementById("ragMinScore").value || "0");
         const ragContextMaxChars = parseInt(document.getElementById("ragContextMaxChars").value || "480", 10);
         const ragWithRules = document.getElementById("ragWithRules").checked;
+        const ragAugment = document.getElementById("ragAugment").checked;
         const fusionThreshold = parseFloat(document.getElementById("fusionThreshold").value || "0.5");
         const fusion = {
           model: parseFloat(document.getElementById("fusionModel").value || "0.6"),
           bm25: parseFloat(document.getElementById("fusionBm25").value || "0.2"),
           vector: parseFloat(document.getElementById("fusionVector").value || "0.15"),
-          rule: parseFloat(document.getElementById("fusionRule").value || "0.05")
+          rule: parseFloat(document.getElementById("fusionRule").value || "0.05"),
         };
 
         const payload = {
           message,
           image_b64,
           audio_b64,
-          mode,
+          mode: currentBackendMode(),
           rag_enabled: ragEnabled,
-          rag_augment_input: ragAugment,
+          rag_augment_input: ragEnabled ? ragAugment : false,
           rag_top_k: ragTopK,
           rag_min_score: ragMinScore,
           rag_context_max_chars: ragContextMaxChars,
-          rag_with_rules: ragWithRules,
+          rag_with_rules: ragEnabled ? ragWithRules : false,
           fusion_threshold: fusionThreshold,
-          fusion
+          fusion,
         };
 
         try {
           const resp = await fetch("/api/agent", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
           });
           const data = await resp.json();
           if (!resp.ok) {
             throw new Error(data && data.error ? data.error : "请求失败");
           }
 
-          addMessage("agent", data.analysis || "(empty response)");
-          setInspector(data.detection);
+          const analysisMode = data.analysis_mode || (data.pipeline && data.pipeline.rag_enabled ? "rag" : "model");
+          state.lastPipeline = data.pipeline || null;
+          document.getElementById("sourceChip").textContent = analysisMode === "rag" ? "分析：RAG 中文" : "分析：模型直答";
+          addMessage("agent", analysisMode === "rag" ? "RAG 中文分析" : "模型直答", data.analysis || "(empty response)", data.agent_used_llm ? data.agent_model || "LLM" : "模板");
+          renderInspector(data.detection, data.pipeline || {}, analysisMode);
         } catch (err) {
-          addMessage("agent", `请求失败：${err.message || err}`);
+          addMessage("agent", "请求失败", `请求失败：${err.message || err}`, "错误");
         }
+
+        renderFilePills();
       }
+
+      document.querySelectorAll("[data-mode]").forEach(btn => {
+        btn.addEventListener("click", () => syncModeUI(btn.dataset.mode));
+      });
+
+      document.getElementById("imageUpload").addEventListener("change", renderFilePills);
+      document.getElementById("audioUpload").addEventListener("change", renderFilePills);
 
       document.getElementById("send").addEventListener("click", () => {
         sendMessage().catch(e => {
@@ -548,10 +1058,19 @@
         document.getElementById("imageUpload").value = "";
         document.getElementById("audioUpload").value = "";
         document.getElementById("hint").textContent = "";
+        renderFilePills();
       });
 
+      syncModeUI("rag");
+      renderFilePills();
+
       (async () => {
-        addMessage("agent", "欢迎使用 Agent 对话页。这里会结合模型、OCR/ASR 与 RAG 证据进行分析。你可以直接输入文本，也可以上传图片或音频。\n\n如果状态停留在‘加载中’，请稍等几秒后再发送。")
+        addMessage(
+          "agent",
+          "欢迎",
+          "这里会结合模型、OCR/ASR 与 RAG 证据进行分析。你可以直接输入文本，也可以上传图片或音频。\n\n如果状态停留在‘加载中’，请稍等几秒后再发送。",
+          "系统"
+        );
         for (;;) {
           const ok = await refreshStatus().catch(() => null);
           if (ok === true) break;

@@ -34,20 +34,23 @@ def _build_prompt(
     rag_block = ""
     if rag is not None:
         rag_block = (
-            "Evidence (retrieval):\n"
+            "检索证据：\n"
             f"{_format_hits(rag)}\n\n"
-            f"Rule hits: {', '.join(rag.rule_hits) if rag.rule_hits else '(none)'}\n"
-            f"BM25 score: {rag.bm25_score:.4f} | Vector score: {rag.vector_score:.4f} | Rule score: {rag.rule_score:.4f}\n"
+            f"规则命中：{', '.join(rag.rule_hits) if rag.rule_hits else '无'}\n"
+            f"BM25 分数：{rag.bm25_score:.4f} | 向量分数：{rag.vector_score:.4f} | 规则分数：{rag.rule_score:.4f}\n"
         )
     return (
-        "You are a safety analysis assistant for toxicity detection. "
-        "Provide a concise analysis and recommendation. "
-        "Use the evidence and scores when available.\n\n"
-        f"Input text:\n{query}\n\n"
-        f"Model score (toxic prob): {model_score:.4f}\n"
-        f"Fusion score: {fusion_score:.4f} | Fusion label: {fusion_label}\n\n"
+        "你是一个中文安全分析助手，负责判断文本、图片和音频中是否存在攻击性或毒性表达。"
+        "请始终用中文回答，语气简洁、专业、可直接给用户阅读。"
+        "如果提供了检索证据，请优先结合证据解释，不要输出英文。\n\n"
+        f"输入内容：\n{query}\n\n"
+        f"模型分数（有毒概率）：{model_score:.4f}\n"
+        f"融合分数：{fusion_score:.4f} | 融合标签：{fusion_label}\n\n"
         f"{rag_block}\n"
-        "Reply with 3-6 short sentences."
+        "请按以下结构输出 3 到 6 句中文：\n"
+        "1. 先给出结论，说明是否存在毒性或攻击性风险。\n"
+        "2. 再说明依据，若有检索证据请点明最关键的证据或规则命中。\n"
+        "3. 最后给出建议，例如如何改写、如何进一步确认或如何处理。"
     )
 
 
@@ -116,9 +119,9 @@ class AgentClient:
 
         if not self._enabled or self._client is None:
             fallback = (
-                f"Model score: {model_score:.4f}. "
-                f"Fusion score: {fusion_score:.4f} (label={fusion_label}). "
-                "LLM is not configured; returning a template response."
+                f"模型分数：{model_score:.4f}。 "
+                f"融合分数：{fusion_score:.4f}（标签={fusion_label}）。 "
+                "当前未配置 LLM，返回的是中文模板结果。"
             )
             return AgentResponse(content=fallback, model="none", latency_ms=0.0, used_llm=False)
 
