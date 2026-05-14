@@ -85,6 +85,26 @@ def _rag_to_dict(rag_result: "RagQueryResult") -> Dict[str, Any]:
     }
 
 
+def _semantic_hint_to_dict(hint: object) -> Optional[Dict[str, Any]]:
+    if hint is None:
+        return None
+    return {
+        "applied": bool(getattr(hint, "applied", False)),
+        "normalized_text": str(getattr(hint, "normalized_text", "") or ""),
+        "reason": str(getattr(hint, "reason", "") or ""),
+        "model": str(getattr(hint, "model", "") or ""),
+        "latency_ms": float(getattr(hint, "latency_ms", 0.0) or 0.0),
+        "used_llm": bool(getattr(hint, "used_llm", False)),
+        "error": str(getattr(hint, "error", "") or ""),
+    }
+
+
+def _rag_has_evidence(rag_result: object) -> bool:
+    if rag_result is None:
+        return False
+    return bool(getattr(rag_result, "hits", None) or getattr(rag_result, "rule_hits", None))
+
+
 def _parse_mode(data: Dict[str, Any]) -> str:
     mode = str(data.get("mode", "ocr_asr")).strip().lower()
     return mode or "ocr_asr"
@@ -205,6 +225,8 @@ def _run_prediction(
 
         rag_results: List[Optional[object]] = [None] * num_inferences
         rag_contexts: List[str] = [""] * num_inferences
+        semantic_hints: List[Optional[object]] = [None] * num_inferences
+        semantic_blocks: List[str] = [""] * num_inferences
         inference_texts = list(display_texts)
         if rag_enabled and rag_retriever is not None:
             for i in range(num_inferences):
@@ -216,11 +238,37 @@ def _run_prediction(
                     min_score=rag_min_score,
                 )
                 rag_result = rag_retriever.query(req)
+                if not _rag_has_evidence(rag_result) and rag_with_rules and display_texts[i].strip():
+                    hint = app.agent.normalize_for_detection(query=display_texts[i])
+                    semantic_hints[i] = hint
+                    hint_dict = _semantic_hint_to_dict(hint)
+                    if hint_dict and hint_dict.get("applied") and hint_dict.get("normalized_text"):
+                        semantic_block = (
+                            f"语义补全：{hint_dict['normalized_text']}\n"
+                            f"补全原因：{hint_dict.get('reason') or 'DeepSeek 识别到隐晦风险表达。'}"
+                        )
+                        semantic_blocks[i] = semantic_block
+                        enriched_query = display_texts[i] + "\n\n" + semantic_block
+                        rag_result = rag_retriever.query(
+                            RagRequest(
+                                query=enriched_query,
+                                top_k=rag_top_k,
+                                with_rules=rag_with_rules,
+                                max_snippet_chars=200,
+                                min_score=rag_min_score,
+                            )
+                        )
+
                 rag_results[i] = rag_result
                 rag_context = _build_rag_context(rag_result, rag_context_max_chars)
                 rag_contexts[i] = rag_context
+                augmented_parts: List[str] = []
+                if semantic_blocks[i]:
+                    augmented_parts.append(semantic_blocks[i])
                 if rag_context and rag_augment_input:
-                    inference_texts[i] = display_texts[i] + "\n\n" + rag_context
+                    augmented_parts.append(rag_context)
+                if augmented_parts:
+                    inference_texts[i] = display_texts[i] + "\n\n" + "\n\n".join(augmented_parts)
 
         threshold_mode = str(data.get("threshold_mode", "calibrated"))
         threshold = float(data.get("threshold", 0.5))
@@ -269,6 +317,7 @@ def _run_prediction(
                 "fusion_components": fusion_components,
                 "rag": _rag_to_dict(rag_result) if rag_result is not None else None,
                 "rag_context": rag_contexts[i] if rag_contexts[i] else "",
+                "semantic_hint": _semantic_hint_to_dict(semantic_hints[i]),
                 "has_text": bool(display_texts[i].strip()),
                 "has_image": bool(images_list[i]),
                 "has_audio": bool(audios_list[i]),
@@ -298,6 +347,7 @@ def _run_prediction(
             "rag_enabled": bool(rag_enabled),
             "rag_warning": rag_warning,
             "rag_results": rag_results,
+            "semantic_hints": semantic_hints,
             "display_texts": display_texts,
             "inference_texts": inference_texts,
             "fusion_threshold": float(fusion_threshold),
@@ -422,7 +472,7 @@ class App:
                 self.load_state["status"] = "ready"
                 self.load_state["progress"] = 100
                 self.load_state["stage"] = "就绪"
-                self.load_state["detail"] = "模型已可用"
+                self.load_state["detail"] = "模型已就绪，可以开始输入"
                 self.load_state["ready_at"] = time.time()
                 if self.rag_index_dir:
                     self.load_state["rag_status"] = "loading" if rag is not None else "error"
@@ -540,6 +590,14 @@ def make_handler(app: App):
                         fusion_score=float(fusion_score) if fusion_score is not None else model_score,
                         fusion_label=int(fusion_label),
                     )
+                    detection_payload = dict(result0)
+                    detection_payload.update({
+                        "analysis": analysis.content,
+                        "analysis_text": analysis.content,
+                        "agent_model": analysis.model,
+                        "agent_latency_ms": analysis.latency_ms,
+                        "agent_used_llm": analysis.used_llm,
+                    })
 
                     payload = {
                         "analysis": analysis.content,
@@ -547,7 +605,7 @@ def make_handler(app: App):
                         "agent_model": analysis.model,
                         "agent_latency_ms": analysis.latency_ms,
                         "agent_used_llm": analysis.used_llm,
-                        "detection": result0,
+                        "detection": detection_payload,
                         "pipeline": {
                             "mode": out.get("mode"),
                             "rag_enabled": out.get("rag_enabled"),

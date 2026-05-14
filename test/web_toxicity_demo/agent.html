@@ -89,9 +89,9 @@
 
       h1 {
         margin: 0;
-        font-size: clamp(30px, 4vw, 46px);
+        font-size: 40px;
         line-height: 1.02;
-        letter-spacing: -0.04em;
+        letter-spacing: 0;
       }
 
       .lead {
@@ -107,6 +107,18 @@
         flex-wrap: wrap;
         gap: 10px;
         align-items: center;
+      }
+
+      .hero-actions {
+        width: min(360px, 100%);
+        display: grid;
+        gap: 10px;
+        align-content: end;
+      }
+
+      .hero-actions .btn {
+        justify-content: center;
+        text-align: center;
       }
 
       .chip {
@@ -229,7 +241,7 @@
       .stat .value {
         font-size: 20px;
         font-weight: 700;
-        letter-spacing: -0.03em;
+        letter-spacing: 0;
       }
 
       .stat .sub {
@@ -556,6 +568,29 @@
 
       .is-disabled { opacity: 0.6; filter: saturate(0.8); }
 
+      .hero,
+      .panel,
+      .mode-card,
+      .stat,
+      details,
+      .banner,
+      select,
+      input[type="number"],
+      textarea,
+      .result-card,
+      .evidence-item,
+      .msg,
+      .btn {
+        border-radius: 8px;
+      }
+
+      .btn:focus-visible,
+      .mode-card:focus-visible,
+      .file-pill button:focus-visible {
+        outline: 3px solid rgba(29, 78, 216, 0.28);
+        outline-offset: 2px;
+      }
+
       @media (max-width: 1100px) {
         .layout { grid-template-columns: 1fr; }
         .result-grid { grid-template-columns: 1fr; }
@@ -563,8 +598,9 @@
 
       @media (max-width: 720px) {
         .shell { padding: 18px 14px 40px; }
-        .hero { padding: 18px; border-radius: 22px; }
-        .panel { padding: 16px; border-radius: 20px; }
+        h1 { font-size: 32px; }
+        .hero { padding: 18px; }
+        .panel { padding: 16px; }
         .compact-grid { grid-template-columns: 1fr; }
       }
     </style>
@@ -582,7 +618,19 @@
             <span class="chip" id="sourceChip">分析：待返回</span>
           </div>
         </div>
-        <a class="btn ghost" href="/">返回检测页</a>
+        <div class="hero-actions">
+          <div class="banner loading" id="loadBanner">模型正在加载中，页面已就绪，等待状态检查完成后即可发送分析。</div>
+          <div class="progress-wrap">
+            <div class="progress-bar" aria-hidden="true">
+              <div class="progress-fill" id="loadProgressFill"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="loadProgressText">0%</span>
+              <span id="loadStageText">初始化</span>
+            </div>
+          </div>
+          <a class="btn ghost" href="/">返回检测页</a>
+        </div>
       </header>
 
       <div class="layout">
@@ -590,14 +638,14 @@
           <div>
             <h2>分析模式</h2>
             <div class="mode-grid">
-              <button type="button" class="mode-card active" data-mode="baseline">
+              <button type="button" class="mode-card" data-mode="baseline">
                 <div class="mode-card-title">
                   <span>多模态模型直答</span>
                   <span class="badge warn">模型本身</span>
                 </div>
                 <p>直接调用模型自身的多模态理解能力，不追加检索证据，适合先看原始判断。</p>
               </button>
-              <button type="button" class="mode-card" data-mode="rag">
+              <button type="button" class="mode-card active" data-mode="rag">
                 <div class="mode-card-title">
                   <span>默认 RAG + 规则</span>
                   <span class="badge">默认开启</span>
@@ -688,18 +736,6 @@
         </aside>
 
         <section class="panel workspace">
-          <div class="banner loading" id="loadBanner">模型正在加载中，页面已就绪，等待状态检查完成后即可发送分析。</div>
-
-          <div class="progress-wrap">
-            <div class="progress-bar" aria-hidden="true">
-              <div class="progress-fill" id="loadProgressFill"></div>
-            </div>
-            <div class="progress-meta">
-              <span id="loadProgressText">0%</span>
-              <span id="loadStageText">初始化</span>
-            </div>
-          </div>
-
           <div class="result-grid">
             <article class="result-card lead">
               <div class="result-head">
@@ -917,27 +953,47 @@
 
         const evidence = document.getElementById("evidenceList");
         evidence.innerHTML = "";
-        if (analysisMode === "rag" && result.rag && Array.isArray(result.rag.hits) && result.rag.hits.length) {
-          if (Array.isArray(result.rag.rule_hits) && result.rag.rule_hits.length) {
+        let evidenceCount = 0;
+        if (analysisMode === "rag") {
+          if (result.semantic_hint && result.semantic_hint.applied) {
+            const semanticDiv = document.createElement("div");
+            semanticDiv.className = "evidence-item";
+            semanticDiv.innerHTML = `
+              <strong>DeepSeek 语义补全：</strong>${esc(result.semantic_hint.normalized_text)}<br />
+              <span>${esc(result.semantic_hint.reason || "在原始 RAG/规则无命中时提供补全文本。")}</span>
+            `;
+            evidence.appendChild(semanticDiv);
+            evidenceCount += 1;
+          }
+
+          if (result.rag && Array.isArray(result.rag.rule_hits) && result.rag.rule_hits.length) {
             const ruleDiv = document.createElement("div");
             ruleDiv.className = "evidence-item";
             ruleDiv.innerHTML = `<strong>规则命中：</strong>${esc(result.rag.rule_hits.join("、"))}`;
             evidence.appendChild(ruleDiv);
+            evidenceCount += 1;
           }
 
-          result.rag.hits.slice(0, 5).forEach(hit => {
-            const div = document.createElement("div");
-            div.className = "evidence-item";
-            div.innerHTML = `
-              <strong>[${esc(hit.doc_type)}] ${esc(hit.title)}</strong><br />
-              ${esc(hit.text_snippet)}
-            `;
-            evidence.appendChild(div);
-          });
-        } else {
+          if (result.rag && Array.isArray(result.rag.hits) && result.rag.hits.length) {
+            result.rag.hits.slice(0, 5).forEach(hit => {
+              const div = document.createElement("div");
+              div.className = "evidence-item";
+              div.innerHTML = `
+                <strong>[${esc(hit.doc_type)}] ${esc(hit.title)}</strong><br />
+                ${esc(hit.text_snippet)}
+              `;
+              evidence.appendChild(div);
+              evidenceCount += 1;
+            });
+          }
+        }
+
+        if (!evidenceCount) {
           const div = document.createElement("div");
           div.className = "evidence-item";
-          div.textContent = analysisMode === "rag" ? "未返回可展示的检索证据。" : "当前是模型直答模式，不显示检索结果。";
+          div.textContent = analysisMode === "rag"
+            ? "未检索到证据，当前结果由模型直判；如 DeepSeek 语义补全可用，会显示在这里。"
+            : "当前是模型直答模式，不显示检索结果。";
           evidence.appendChild(div);
         }
       }

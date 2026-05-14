@@ -1,7 +1,7 @@
 from .types import RagDocument, RagHit, RagQueryResult, RagRequest
 from .retriever import RagRetriever
 from .fusion import FusionResult, FusionWeights, fuse_scores
-from .agent import AgentClient
+from .agent import AgentClient, SemanticHint
 
 __all__ = [
     "AgentClient",
@@ -12,5 +12,6 @@ __all__ = [
     "RagQueryResult",
     "RagRequest",
     "RagRetriever",
+    "SemanticHint",
     "fuse_scores",
 ]

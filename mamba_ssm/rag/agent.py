@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -14,6 +15,17 @@ class AgentResponse:
     model: str
     latency_ms: float
     used_llm: bool
+
+
+@dataclass(frozen=True)
+class SemanticHint:
+    applied: bool
+    normalized_text: str
+    reason: str
+    model: str
+    latency_ms: float
+    used_llm: bool
+    error: str = ""
 
 
 def _format_hits(rag: RagQueryResult, *, max_hits: int = 5) -> str:
@@ -52,6 +64,34 @@ def _build_prompt(
         "2. 再说明依据，若有检索证据请点明最关键的证据或规则命中。\n"
         "3. 最后给出建议，例如如何改写、如何进一步确认或如何处理。"
     )
+
+
+def _build_semantic_normalize_prompt(query: str) -> str:
+    return (
+        "你是中文安全检测的语义归一化助手。你的任务是识别输入中可能通过谐音、数字、拼音、缩写、错别字、"
+        "拆字或隐晦表达伪装的攻击性/侮辱性内容，并把它改写为更直白、便于安全分类模型识别的中文表达。\n"
+        "只在确实存在隐晦攻击、辱骂、歧视、威胁或骚扰含义时应用补全；普通文本不要过度解释。\n"
+        "必须只输出一个 JSON 对象，不要输出 Markdown，不要输出解释性前后缀。\n"
+        "JSON 字段固定为：applied(boolean), normalized_text(string), reason(string)。\n"
+        "normalized_text 只写补全后的中文短句，不要重复原文；reason 用一句简短中文说明。\n\n"
+        f"输入：{query}"
+    )
+
+
+def _extract_json_object(text: str) -> Dict[str, object]:
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip()
+        if raw.lower().startswith("json"):
+            raw = raw[4:].strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end >= start:
+        raw = raw[start : end + 1]
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM semantic hint response is not a JSON object")
+    return parsed
 
 
 class AgentClient:
@@ -133,3 +173,59 @@ class AgentClient:
             content = f"LLM call failed: {exc}"
         dt = (time.time() - t0) * 1000.0
         return AgentResponse(content=str(content), model=self.model, latency_ms=float(dt), used_llm=True)
+
+    def normalize_for_detection(self, *, query: str) -> SemanticHint:
+        text = str(query or "").strip()
+        if not text:
+            return SemanticHint(
+                applied=False,
+                normalized_text="",
+                reason="输入为空，未进行语义补全。",
+                model="none",
+                latency_ms=0.0,
+                used_llm=False,
+            )
+
+        if not self._enabled or self._client is None:
+            return SemanticHint(
+                applied=False,
+                normalized_text="",
+                reason="当前未配置 LLM，跳过语义补全。",
+                model="none",
+                latency_ms=0.0,
+                used_llm=False,
+            )
+
+        prompt = _build_semantic_normalize_prompt(text)
+        t0 = time.time()
+        try:
+            response = self._client.invoke(prompt)
+            content = getattr(response, "content", str(response))
+            parsed = _extract_json_object(str(content))
+            applied = bool(parsed.get("applied", False))
+            normalized_text = str(parsed.get("normalized_text", "") or "").strip()
+            reason = str(parsed.get("reason", "") or "").strip()
+            if not normalized_text:
+                applied = False
+            if len(normalized_text) > 240:
+                normalized_text = normalized_text[:237] + "..."
+            if len(reason) > 180:
+                reason = reason[:177] + "..."
+            return SemanticHint(
+                applied=applied,
+                normalized_text=normalized_text if applied else "",
+                reason=reason or ("已完成语义补全。" if applied else "未发现需要补全的隐晦攻击表达。"),
+                model=self.model,
+                latency_ms=float((time.time() - t0) * 1000.0),
+                used_llm=True,
+            )
+        except Exception as exc:
+            return SemanticHint(
+                applied=False,
+                normalized_text="",
+                reason="语义补全调用失败，已回退到原始检测流程。",
+                model=self.model,
+                latency_ms=float((time.time() - t0) * 1000.0),
+                used_llm=True,
+                error=str(exc),
+            )
