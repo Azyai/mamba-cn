@@ -120,6 +120,12 @@
       th, td { border-bottom: 1px solid rgba(0,0,0,0.08); padding: 10px 8px; vertical-align: top; }
       th { color: rgba(29,29,31,0.7); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
       td { font-size: 14px; }
+      tr.is-toxic {
+        background: rgba(255, 59, 48, 0.12);
+      }
+      tr.is-toxic td {
+        border-bottom-color: rgba(255, 59, 48, 0.22);
+      }
 
       .tag { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
       .tag.bad { background: rgba(255,59,48,0.12); color: #b00020; }
@@ -557,6 +563,9 @@
               if (!rInfo || !document.getElementById(rInfo.id)) continue;
               
               const predHTML = r.label === 1 ? `<span class="tag bad">toxic</span>` : `<span class="tag good">non-toxic</span>`;
+              const tr = document.getElementById(rInfo.id);
+              if (!tr) continue;
+              tr.classList.toggle("is-toxic", Number(r.label) === 1);
               
               let modalities = [];
               if (r.has_text) modalities.push("文本");
@@ -577,7 +586,6 @@
                 : "";
               const infoHTML = `<span style="font-size:12px;color:var(--muted)">threshold_mode=${data.threshold_mode}<br/>threshold=${Number(data.threshold).toFixed(6)}<br/>${fusionInfo}${semanticInfo}latency_ms=${Number(data.latency_ms).toFixed(1)}</span>`;
 
-              const tr = document.getElementById(rInfo.id);
               tr.innerHTML =
                 `<td>${rInfo.index}</td>` +
                 `<td>${displayContent}</td>` +

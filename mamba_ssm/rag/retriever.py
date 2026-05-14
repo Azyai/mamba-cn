@@ -179,6 +179,19 @@ class RagRetriever:
                 raise RuntimeError("Missing dependency: sentence-transformers") from exc
             self.embedder = SentenceTransformer(self.embedding_model_name, device=str(self.device))
 
+    def _ensure_bm25_loaded(self) -> None:
+        if self.bm25 is not None or not self.tokens:
+            return
+        with self._load_lock:
+            if self.bm25 is not None:
+                return
+            try:
+                from rank_bm25 import BM25Okapi
+            except Exception as exc:
+                self._load_error = exc
+                return
+            self.bm25 = BM25Okapi(self.tokens)
+
     @classmethod
     def load(
         cls,
@@ -297,6 +310,7 @@ class RagRetriever:
         t0 = time.time()
         query = normalize_text(request.query)
         tokens = tokenize(query)
+        self._ensure_bm25_loaded()
 
         bm25_scores: List[float] = []
         if self.bm25 is not None and tokens:
@@ -305,7 +319,11 @@ class RagRetriever:
 
         bm25_top = []
         if bm25_scores:
-            bm25_top = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[: request.top_k]
+            bm25_top = [
+                i
+                for i in sorted(range(len(bm25_scores)), key=lambda j: bm25_scores[j], reverse=True)
+                if float(bm25_scores[i]) > 0.0
+            ][: request.top_k]
 
         vec_idx, vec_scores = self._vector_search(query, top_k=request.top_k)
         vec_norm = [0.0 for _ in self.docs]
@@ -315,9 +333,8 @@ class RagRetriever:
                 if 0 <= idx < len(vec_norm):
                     vec_norm[idx] = norm_scores[i]
 
-        candidate_idx = set(bm25_top + vec_idx)
-        if not candidate_idx and self.docs and self.ready:
-            candidate_idx = set(range(min(len(self.docs), request.top_k)))
+        vector_top = [idx for idx in vec_idx if 0 <= idx < len(vec_norm) and float(vec_norm[idx]) > 0.0]
+        candidate_idx = set(bm25_top + vector_top)
 
         hits: List[RagHit] = []
         for idx in candidate_idx:
@@ -325,6 +342,8 @@ class RagRetriever:
             if not self._filter_doc(doc, request.filters):
                 continue
             fused = float(bm25_norm[idx]) * self.bm25_weight + float(vec_norm[idx]) * self.vector_weight
+            if fused <= 0.0:
+                continue
             if fused < float(request.min_score):
                 continue
             hits.append(
@@ -348,6 +367,26 @@ class RagRetriever:
         if request.with_rules and self.keyword_matcher is not None:
             rule_hits = self.keyword_matcher.find(query, max_hits=self.max_rule_hits)
             rule_score = min(1.0, float(len(rule_hits)) / max(1.0, float(self.max_rule_hits)))
+            existing_titles = {normalize_text(h.title) for h in hits}
+            for term in rule_hits[: request.top_k]:
+                norm_term = normalize_text(term)
+                if not norm_term or norm_term in existing_titles:
+                    continue
+                hits.append(
+                    RagHit(
+                        doc_id=f"lexicon-rule-{len(existing_titles) + 1}",
+                        title=term,
+                        doc_type="lexicon",
+                        score_bm25=1.0,
+                        score_vec=0.0,
+                        score_fused=1.0,
+                        text_snippet=term,
+                        source="lexicon_terms.json",
+                    )
+                )
+                existing_titles.add(norm_term)
+            hits.sort(key=lambda h: h.score_fused, reverse=True)
+            hits = hits[: request.top_k]
 
         bm25_score = max((h.score_bm25 for h in hits), default=0.0)
         vector_score = max((h.score_vec for h in hits), default=0.0)
@@ -361,6 +400,8 @@ class RagRetriever:
             meta={
                 "elapsed_ms": (time.time() - t0) * 1000.0,
                 "doc_count": len(self.docs),
+                "bm25_ready": self.bm25 is not None,
+                "vector_ready": self.faiss_index is not None and self.embedder is not None,
                 "bm25_weight": float(self.bm25_weight),
                 "vector_weight": float(self.vector_weight),
                 "index_meta": self.index_meta,

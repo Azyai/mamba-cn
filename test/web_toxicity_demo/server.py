@@ -245,7 +245,7 @@ def _run_prediction(
                     if hint_dict and hint_dict.get("applied") and hint_dict.get("normalized_text"):
                         semantic_block = (
                             f"语义补全：{hint_dict['normalized_text']}\n"
-                            f"补全原因：{hint_dict.get('reason') or 'DeepSeek 识别到隐晦风险表达。'}"
+                            f"补全原因：{hint_dict.get('reason') or '语义模型识别到隐晦风险表达。'}"
                         )
                         semantic_blocks[i] = semantic_block
                         enriched_query = display_texts[i] + "\n\n" + semantic_block
@@ -594,7 +594,7 @@ def make_handler(app: App):
                     detection_payload.update({
                         "analysis": analysis.content,
                         "analysis_text": analysis.content,
-                        "agent_model": analysis.model,
+                        "agent_model": "辅助分析" if analysis.used_llm else "none",
                         "agent_latency_ms": analysis.latency_ms,
                         "agent_used_llm": analysis.used_llm,
                     })
@@ -602,7 +602,7 @@ def make_handler(app: App):
                     payload = {
                         "analysis": analysis.content,
                         "analysis_mode": "rag" if rag_result is not None else "model",
-                        "agent_model": analysis.model,
+                        "agent_model": "辅助分析" if analysis.used_llm else "none",
                         "agent_latency_ms": analysis.latency_ms,
                         "agent_used_llm": analysis.used_llm,
                         "detection": detection_payload,
