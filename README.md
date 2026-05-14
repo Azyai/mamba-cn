@@ -227,6 +227,8 @@ python -m mamba_ssm.rag.build_index \
   --device cpu
 ```
 
+如果你想用 GPU 构建，可以把 `--device cpu` 改成 `--device cuda`（脚本也兼容 `GPU` 这种写法，但推荐直接写 `cuda`）。
+
 ### 启用 RAG/Agent 的 Web Demo
 
 ```bash

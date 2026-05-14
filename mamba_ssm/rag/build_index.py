@@ -11,6 +11,13 @@ from .text_utils import normalize_text, tokenize
 from .types import RagDocument
 
 
+def _normalize_device_name(device: str) -> str:
+    value = str(device).strip().lower()
+    if value in {"gpu", "cuda", "cuda:0"}:
+        return "cuda"
+    return value or "cpu"
+
+
 def _iter_text_files(base: Path) -> Iterable[Path]:
     for path in base.rglob("*"):
         if not path.is_file():
@@ -148,7 +155,7 @@ def build_index(
     except Exception as exc:
         raise RuntimeError("Missing dependency: faiss") from exc
 
-    embedder = SentenceTransformer(embedding_model, device=str(device))
+    embedder = SentenceTransformer(embedding_model, device=_normalize_device_name(device))
     texts = [normalize_text(doc.text) for doc in docs]
     embeddings = embedder.encode(texts, batch_size=int(batch_size), normalize_embeddings=True)
     vecs = np.asarray(embeddings, dtype="float32")
@@ -199,7 +206,7 @@ def main() -> None:
         docs=docs,
         output_dir=output_dir,
         embedding_model=str(args.embedding_model),
-        device=str(args.device),
+        device=_normalize_device_name(str(args.device)),
         batch_size=int(args.batch_size),
         bm25_weight=float(args.bm25_weight),
         vector_weight=float(args.vector_weight),

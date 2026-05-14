@@ -378,6 +378,9 @@ class App:
             "dataset_for_threshold": self.dataset_for_threshold,
             "rag_index_dir": self.rag_index_dir,
             "rag_status": "disabled" if not self.rag_index_dir else "loading",
+            "rag_progress": 0,
+            "rag_stage": "初始化",
+            "rag_detail": None,
             "rag_error": None,
             "error": None,
             "started_at": time.time(),
@@ -407,8 +410,10 @@ class App:
             rag_error = None
             if self.rag_index_dir:
                 try:
-                    self._set_load_state(progress=86, stage="加载 RAG", detail="正在构建检索器与规则词典")
-                    rag = RagRetriever.load(self.rag_index_dir, device=self.rag_device)
+                    self._set_load_state(progress=88, stage="RAG 轻量加载", detail="正在加载规则词典与索引元数据", rag_progress=8, rag_stage="准备索引", rag_detail="读取检索索引文件")
+                    rag = RagRetriever.load(self.rag_index_dir, device=self.rag_device, lazy=True)
+                    rag.start_background_load()
+                    self._set_load_state(rag_progress=18, rag_stage="后台构建", rag_detail="BM25 和向量模型正在后台加载")
                 except Exception as e:
                     rag_error = str(e)
             with self._lock:
@@ -420,7 +425,7 @@ class App:
                 self.load_state["detail"] = "模型已可用"
                 self.load_state["ready_at"] = time.time()
                 if self.rag_index_dir:
-                    self.load_state["rag_status"] = "ready" if rag is not None else "error"
+                    self.load_state["rag_status"] = "loading" if rag is not None else "error"
                     self.load_state["rag_error"] = rag_error
         except Exception as e:
             with self._lock:
@@ -459,6 +464,26 @@ def make_handler(app: App):
             if self.path.startswith("/api/status"):
                 with app._lock:
                     st = dict(app.load_state)
+                    rag = app.rag_retriever
+                    if st.get("status") == "ready" and rag is not None and st.get("rag_index_dir"):
+                        if rag.loading_error is not None:
+                            st["rag_status"] = "error"
+                            st["rag_error"] = str(rag.loading_error)
+                            st["rag_stage"] = "失败"
+                            st["rag_detail"] = "RAG 后台加载失败"
+                            st["rag_progress"] = 0
+                        elif rag.ready:
+                            st["rag_status"] = "ready"
+                            st["rag_error"] = None
+                            st["rag_stage"] = "就绪"
+                            st["rag_detail"] = "RAG 能力已加载完成"
+                            st["rag_progress"] = 100
+                        else:
+                            st["rag_status"] = "loading"
+                            if not st.get("rag_stage"):
+                                st["rag_stage"] = "后台构建"
+                            if not st.get("rag_detail"):
+                                st["rag_detail"] = "BM25 和向量模型正在后台加载"
                     if st.get("ready_at") is not None:
                         try:
                             st["ready_in_ms"] = float(st["ready_at"]) * 1000.0 - float(st["started_at"]) * 1000.0

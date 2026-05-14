@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -95,28 +96,88 @@ class RagRetriever:
     def __init__(
         self,
         *,
+        index_dir: Path,
         docs: List[RagDocument],
         tokens: List[List[str]],
         bm25,
         faiss_index,
         embedder,
+        embedding_model_name: str,
+        device: str,
         lexicon_terms: Sequence[str],
         index_meta: Dict[str, object],
         bm25_weight: float = 0.5,
         vector_weight: float = 0.5,
         max_rule_hits: int = 20,
     ) -> None:
+        self.index_dir = Path(index_dir)
         self.docs = docs
         self.tokens = tokens
         self.bm25 = bm25
         self.faiss_index = faiss_index
         self.embedder = embedder
+        self.embedding_model_name = str(embedding_model_name)
+        self.device = str(device)
         self.lexicon_terms = list(lexicon_terms)
         self.index_meta = dict(index_meta)
         self.bm25_weight = float(bm25_weight)
         self.vector_weight = float(vector_weight)
         self.max_rule_hits = int(max_rule_hits)
         self.keyword_matcher = _KeywordMatcher(self.lexicon_terms)
+        self._load_lock = threading.Lock()
+        self._load_started = False
+        self._load_done = threading.Event()
+        self._load_error: Optional[BaseException] = None
+
+    @property
+    def ready(self) -> bool:
+        return self._load_done.is_set() and self._load_error is None and self.bm25 is not None
+
+    @property
+    def loading_error(self) -> Optional[BaseException]:
+        return self._load_error
+
+    def start_background_load(self) -> None:
+        if self.ready or self._load_error is not None:
+            return
+        with self._load_lock:
+            if self._load_started:
+                return
+            self._load_started = True
+            worker = threading.Thread(target=self._load_backing_indexes, daemon=True)
+            worker.start()
+
+    def _load_backing_indexes(self) -> None:
+        try:
+            self._load_full_indexes()
+        except Exception as exc:
+            self._load_error = exc
+        finally:
+            self._load_done.set()
+
+    def _load_full_indexes(self) -> None:
+        if self.bm25 is None:
+            try:
+                from rank_bm25 import BM25Okapi
+            except Exception as exc:
+                raise RuntimeError("Missing dependency: rank_bm25") from exc
+            self.bm25 = BM25Okapi(self.tokens)
+
+        if self.faiss_index is None and (self.index_dir / "faiss.index").exists():
+            try:
+                import faiss  # type: ignore
+            except Exception as exc:
+                raise RuntimeError("Missing dependency: faiss") from exc
+            self.faiss_index = faiss.read_index(str(self.index_dir / "faiss.index"))
+
+        if self.faiss_index is not None and self.embedder is None:
+            if not self.embedding_model_name:
+                raise RuntimeError("Embedding model missing in manifest or args")
+            try:
+                from sentence_transformers import SentenceTransformer
+            except Exception as exc:
+                raise RuntimeError("Missing dependency: sentence-transformers") from exc
+            self.embedder = SentenceTransformer(self.embedding_model_name, device=str(self.device))
 
     @classmethod
     def load(
@@ -126,6 +187,7 @@ class RagRetriever:
         device: str = "cpu",
         embedding_model: Optional[str] = None,
         max_rule_hits: int = 20,
+        lazy: bool = False,
     ) -> "RagRetriever":
         base = Path(index_dir).expanduser().resolve()
         if not base.exists():
@@ -151,43 +213,51 @@ class RagRetriever:
         if lexicon_path.exists():
             lexicon_terms = [str(x) for x in _read_json(lexicon_path)]
 
-        try:
-            from rank_bm25 import BM25Okapi
-        except Exception as exc:
-            raise RuntimeError("Missing dependency: rank_bm25") from exc
-
-        bm25 = BM25Okapi(tokens)
-
+        bm25 = None
         faiss_index = None
-        if (base / "faiss.index").exists():
-            try:
-                import faiss  # type: ignore
-            except Exception as exc:
-                raise RuntimeError("Missing dependency: faiss") from exc
-            faiss_index = faiss.read_index(str(base / "faiss.index"))
-
         embedder = None
-        if faiss_index is not None:
-            if not model_name:
-                raise RuntimeError("Embedding model missing in manifest or args")
+        if not lazy:
             try:
-                from sentence_transformers import SentenceTransformer
+                from rank_bm25 import BM25Okapi
             except Exception as exc:
-                raise RuntimeError("Missing dependency: sentence-transformers") from exc
-            embedder = SentenceTransformer(model_name, device=str(device))
+                raise RuntimeError("Missing dependency: rank_bm25") from exc
 
-        return cls(
+            bm25 = BM25Okapi(tokens)
+
+            if (base / "faiss.index").exists():
+                try:
+                    import faiss  # type: ignore
+                except Exception as exc:
+                    raise RuntimeError("Missing dependency: faiss") from exc
+                faiss_index = faiss.read_index(str(base / "faiss.index"))
+
+            if faiss_index is not None:
+                if not model_name:
+                    raise RuntimeError("Embedding model missing in manifest or args")
+                try:
+                    from sentence_transformers import SentenceTransformer
+                except Exception as exc:
+                    raise RuntimeError("Missing dependency: sentence-transformers") from exc
+                embedder = SentenceTransformer(model_name, device=str(device))
+
+        retriever = cls(
+            index_dir=base,
             docs=docs,
             tokens=tokens,
             bm25=bm25,
             faiss_index=faiss_index,
             embedder=embedder,
+            embedding_model_name=model_name,
+            device=str(device),
             lexicon_terms=lexicon_terms,
             index_meta=manifest,
             bm25_weight=float(manifest.get("bm25_weight", 0.5)),
             vector_weight=float(manifest.get("vector_weight", 0.5)),
             max_rule_hits=max_rule_hits,
         )
+        if lazy:
+            retriever.start_background_load()
+        return retriever
 
     def _vector_search(self, query: str, *, top_k: int) -> Tuple[List[int], List[float]]:
         if self.faiss_index is None or self.embedder is None:
@@ -246,7 +316,7 @@ class RagRetriever:
                     vec_norm[idx] = norm_scores[i]
 
         candidate_idx = set(bm25_top + vec_idx)
-        if not candidate_idx and self.docs:
+        if not candidate_idx and self.docs and self.ready:
             candidate_idx = set(range(min(len(self.docs), request.top_k)))
 
         hits: List[RagHit] = []
