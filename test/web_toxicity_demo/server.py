@@ -369,6 +369,9 @@ class App:
         self.agent = AgentClient.from_env()
         self.load_state: Dict[str, Any] = {
             "status": "loading",
+            "progress": 0,
+            "stage": "初始化",
+            "detail": "启动服务中",
             "run_dir": self.run_dir,
             "device": self.device,
             "dtype": self.dtype,
@@ -381,12 +384,17 @@ class App:
             "ready_at": None,
         }
 
+    def _set_load_state(self, **kwargs: Any) -> None:
+        with self._lock:
+            self.load_state.update(kwargs)
+
     def start_loading(self) -> None:
         t = threading.Thread(target=self._load, daemon=True)
         t.start()
 
     def _load(self) -> None:
         try:
+            self._set_load_state(progress=8, stage="加载权重", detail="正在加载主模型与分类头")
             pred = load_offensive_predictor(
                 run_dir=self.run_dir,
                 device=self.device,
@@ -394,10 +402,12 @@ class App:
                 dataset_for_threshold=self.dataset_for_threshold,
                 pretrained_dir=self.pretrained_dir,
             )
+            self._set_load_state(progress=72, stage="主模型完成", detail="正在准备 RAG 索引")
             rag = None
             rag_error = None
             if self.rag_index_dir:
                 try:
+                    self._set_load_state(progress=86, stage="加载 RAG", detail="正在构建检索器与规则词典")
                     rag = RagRetriever.load(self.rag_index_dir, device=self.rag_device)
                 except Exception as e:
                     rag_error = str(e)
@@ -405,6 +415,9 @@ class App:
                 self.predictor = pred
                 self.rag_retriever = rag
                 self.load_state["status"] = "ready"
+                self.load_state["progress"] = 100
+                self.load_state["stage"] = "就绪"
+                self.load_state["detail"] = "模型已可用"
                 self.load_state["ready_at"] = time.time()
                 if self.rag_index_dir:
                     self.load_state["rag_status"] = "ready" if rag is not None else "error"
@@ -413,6 +426,9 @@ class App:
             with self._lock:
                 self.predictor = None
                 self.load_state["status"] = "error"
+                self.load_state["progress"] = 0
+                self.load_state["stage"] = "失败"
+                self.load_state["detail"] = "加载过程中发生错误"
                 self.load_state["error"] = str(e)
 
 

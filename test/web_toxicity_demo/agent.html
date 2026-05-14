@@ -188,6 +188,50 @@
         color: var(--muted);
       }
 
+      .progress-wrap {
+        display: grid;
+        gap: 8px;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.06);
+      }
+
+      .progress-fill {
+        width: 0%;
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(255, 106, 0, 0.92), rgba(15, 118, 110, 0.92));
+        transition: width 0.25s ease;
+      }
+
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .banner {
+        border: 1px solid rgba(15, 118, 110, 0.18);
+        background: rgba(15, 118, 110, 0.08);
+        color: var(--ink);
+        padding: 10px 12px;
+        border-radius: 14px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .banner.loading {
+        border-color: rgba(255, 106, 0, 0.18);
+        background: rgba(255, 106, 0, 0.08);
+      }
+
       .evidence {
         display: grid;
         gap: 8px;
@@ -308,6 +352,16 @@
         </div>
 
         <div class="panel chat">
+          <div class="banner loading" id="loadBanner">模型正在加载中，页面已就绪，等待状态检查完成后即可发送分析。</div>
+          <div class="progress-wrap" style="margin-top:10px;">
+            <div class="progress-bar" aria-hidden="true">
+              <div class="progress-fill" id="loadProgressFill"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="loadProgressText">0%</span>
+              <span id="loadStageText">初始化</span>
+            </div>
+          </div>
           <div class="messages" id="messages"></div>
           <div class="composer">
             <textarea id="input" placeholder="输入需要分析的内容...\n支持文本 + 可选图片/音频"></textarea>
@@ -341,6 +395,26 @@
         const box = document.getElementById("messages");
         box.appendChild(el);
         box.scrollTop = box.scrollHeight;
+      }
+
+      function setLoadBanner(text, loading) {
+        const el = document.getElementById("loadBanner");
+        if (!el) return;
+        el.textContent = text;
+        el.classList.toggle("loading", !!loading);
+      }
+
+      function setLoadProgress(progress, stage, detail) {
+        const fill = document.getElementById("loadProgressFill");
+        const text = document.getElementById("loadProgressText");
+        const stageText = document.getElementById("loadStageText");
+        const value = Math.max(0, Math.min(100, Number(progress ?? 0)));
+        fill.style.width = `${value}%`;
+        text.textContent = `${Math.round(value)}%`;
+        stageText.textContent = stage || "加载中";
+        if (detail) {
+          setLoadBanner(detail, value < 100);
+        }
       }
 
       function fileToBase64(file) {
@@ -382,13 +456,19 @@
         const chip = document.getElementById("statusChip");
         if (st.status === "ready") {
           chip.textContent = "状态：就绪";
+          setLoadProgress(100, "就绪", "模型已就绪，可以开始输入文本、图片或音频进行分析。");
+          setLoadBanner("模型已就绪，可以开始输入文本、图片或音频进行分析。", false);
           return true;
         }
         if (st.status === "error") {
           chip.textContent = "状态：加载失败";
+          setLoadProgress(0, "失败", st.detail || "模型加载失败，请检查 run_dir、权重和 RAG 索引。");
+          setLoadBanner("模型加载失败，请检查 run_dir、权重和 RAG 索引。", false);
           return false;
         }
         chip.textContent = "状态：加载中";
+        setLoadProgress(st.progress ?? 0, st.stage || "加载中", st.detail || "模型正在加载中，页面内容已可见，稍等后即可开始对话。");
+        setLoadBanner(st.detail || "模型正在加载中，页面内容已可见，稍等后即可开始对话。", true);
         return null;
       }
 
@@ -471,6 +551,7 @@
       });
 
       (async () => {
+        addMessage("agent", "欢迎使用 Agent 对话页。这里会结合模型、OCR/ASR 与 RAG 证据进行分析。你可以直接输入文本，也可以上传图片或音频。\n\n如果状态停留在‘加载中’，请稍等几秒后再发送。")
         for (;;) {
           const ok = await refreshStatus().catch(() => null);
           if (ok === true) break;

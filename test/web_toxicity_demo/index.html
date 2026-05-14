@@ -141,6 +141,32 @@
       }
       .overlay-title { font-size: 16px; font-weight: 700; margin: 0; }
       .overlay-sub { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+      .progress-wrap {
+        margin-top: 14px;
+        display: grid;
+        gap: 8px;
+      }
+      .progress-bar {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(0,0,0,0.06);
+      }
+      .progress-fill {
+        width: 0%;
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(0,122,255,0.95), rgba(52,199,89,0.95));
+        transition: width 0.25s ease;
+      }
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12px;
+        color: var(--muted);
+      }
       .spinner {
         margin-top: 14px;
         width: 22px;
@@ -158,6 +184,15 @@
       <div class="overlay-card">
         <div class="overlay-title" id="overlayTitle">加载模型中…</div>
         <div class="overlay-sub" id="overlaySub">首次加载可能较慢，请稍候。</div>
+        <div class="progress-wrap">
+          <div class="progress-bar" aria-hidden="true">
+            <div class="progress-fill" id="overlayProgressFill"></div>
+          </div>
+          <div class="progress-meta">
+            <span id="overlayProgressText">0%</span>
+            <span id="overlayStageText">初始化</span>
+          </div>
+        </div>
         <div class="spinner" aria-hidden="true"></div>
         <div class="overlay-sub err" id="overlayErr" style="display:none;margin-top:10px;"></div>
       </div>
@@ -335,6 +370,18 @@
         }
       }
 
+      function setOverlayProgress(progress, stage, detail) {
+        const fill = document.getElementById("overlayProgressFill");
+        const text = document.getElementById("overlayProgressText");
+        const stageText = document.getElementById("overlayStageText");
+        const sub = document.getElementById("overlaySub");
+        const value = Math.max(0, Math.min(100, Number(progress ?? 0)));
+        fill.style.width = `${value}%`;
+        text.textContent = `${Math.round(value)}%`;
+        stageText.textContent = stage || "加载中";
+        if (detail) sub.textContent = detail;
+      }
+
       function setReady(ready) {
         document.getElementById("run").disabled = !ready;
         document.getElementById("thresholdMode").disabled = !ready;
@@ -359,19 +406,22 @@
         const chip = document.getElementById("statusChip");
         if (st.status === "ready") {
           chip.textContent = "状态：就绪";
+          setOverlayProgress(100, "就绪", "模型已加载完成。\n");
           setReady(true);
           setOverlay(false);
           return true;
         }
         if (st.status === "error") {
           chip.textContent = "状态：加载失败";
+          setOverlayProgress(0, "失败", st.detail || "加载过程中发生错误");
           setReady(false);
           setOverlay(true, "模型加载失败", "请检查 run_dir 与权重路径是否正确。", st.error || "未知错误");
           return false;
         }
         chip.textContent = "状态：加载中";
+        setOverlayProgress(st.progress ?? 0, st.stage || "加载中", st.detail || "首次加载可能较慢，请稍候。");
         setReady(false);
-        setOverlay(true, "加载模型中…", "首次加载可能较慢，请稍候。", null);
+        setOverlay(true, "加载模型中…", st.detail || "首次加载可能较慢，请稍候。", null);
         return null;
       }
 
