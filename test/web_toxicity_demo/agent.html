@@ -446,6 +446,35 @@
 
       .analysis-box { display: grid; gap: 10px; }
 
+      .summary-lines {
+        display: grid;
+        gap: 6px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.86);
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .summary-line {
+        display: grid;
+        grid-template-columns: 86px minmax(0, 1fr);
+        gap: 8px;
+        align-items: start;
+      }
+
+      .summary-label {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .summary-value {
+        color: var(--muted);
+        line-height: 1.5;
+        word-break: break-word;
+      }
+
       .evidence-panel { display: grid; gap: 10px; }
 
       .evidence-list { display: grid; gap: 8px; }
@@ -658,6 +687,13 @@
                 </div>
                 <p>直接调用模型自身的多模态理解能力，不追加检索证据，适合先看原始判断。</p>
               </button>
+              <button type="button" class="mode-card" data-mode="ocr_asr">
+                <div class="mode-card-title">
+                  <span>OCR/ASR 增强</span>
+                  <span class="badge warn">不启用 RAG</span>
+                </div>
+                <p>先做 OCR/ASR 识别并拼接到输入，再让模型直答；不使用 RAG 检索。</p>
+              </button>
               <button type="button" class="mode-card active" data-mode="rag">
                 <div class="mode-card-title">
                   <span>默认 RAG + 规则</span>
@@ -759,6 +795,16 @@
                 <div class="result-meta" id="analysisMetaChips"></div>
               </div>
               <p id="analysisText">在这里会显示中文分析结果。</p>
+              <div class="summary-lines">
+                <div class="summary-line">
+                  <span class="summary-label">RAG 检索</span>
+                  <span class="summary-value" id="summaryRag">-</span>
+                </div>
+                <div class="summary-line">
+                  <span class="summary-label">规则命中</span>
+                  <span class="summary-value" id="summaryRules">-</span>
+                </div>
+              </div>
             </article>
 
             <article class="result-card">
@@ -769,18 +815,6 @@
                 </div>
                 <div class="result-meta" id="resultMetaChips"></div>
               </div>
-            </article>
-          </div>
-
-          <div class="evidence-panel">
-            <article class="result-card">
-              <div class="result-head">
-                <div>
-                  <span class="result-eyebrow">检索证据</span>
-                  <h3>RAG 证据与规则</h3>
-                </div>
-              </div>
-              <div class="evidence-list" id="evidenceList"></div>
             </article>
           </div>
 
@@ -873,18 +907,30 @@
       }
 
       function currentBackendMode() {
-        return state.mode === "baseline" ? "baseline" : "ocr_asr_rag";
+        if (state.mode === "baseline") return "baseline";
+        if (state.mode === "ocr_asr") return "ocr_asr";
+        return "ocr_asr_rag";
       }
 
       function syncModeUI(mode) {
         state.mode = mode;
-        const ragEnabled = mode !== "baseline";
+        const ragEnabled = mode === "rag";
         document.querySelectorAll("[data-mode]").forEach(btn => {
           btn.classList.toggle("active", btn.dataset.mode === mode);
         });
 
-        document.getElementById("pipelineChip").textContent = ragEnabled ? "模式：默认 RAG + 规则" : "模式：多模态模型直答";
-        document.getElementById("sourceChip").textContent = ragEnabled ? "分析：检索增强" : "分析：模型直答";
+        const pipelineChip = document.getElementById("pipelineChip");
+        const sourceChip = document.getElementById("sourceChip");
+        if (mode === "rag") {
+          pipelineChip.textContent = "模式：默认 RAG + 规则";
+          sourceChip.textContent = "分析：检索增强";
+        } else if (mode === "ocr_asr") {
+          pipelineChip.textContent = "模式：OCR/ASR 增强";
+          sourceChip.textContent = "分析：模型直答";
+        } else {
+          pipelineChip.textContent = "模式：多模态模型直答";
+          sourceChip.textContent = "分析：模型直答";
+        }
 
         const ragPanel = document.getElementById("ragAdvanced");
         ragPanel.classList.toggle("is-disabled", !ragEnabled);
@@ -894,12 +940,12 @@
           }
         });
 
-        if (!ragEnabled) {
-          document.getElementById("ragAugment").checked = false;
-          document.getElementById("ragWithRules").checked = false;
-        } else {
+        if (ragEnabled) {
           document.getElementById("ragAugment").checked = true;
           document.getElementById("ragWithRules").checked = true;
+        } else {
+          document.getElementById("ragAugment").checked = false;
+          document.getElementById("ragWithRules").checked = false;
         }
       }
 
@@ -970,51 +1016,22 @@
         title.textContent = analysisMode === "rag" ? "默认 RAG + 规则检索" : "多模态模型本身能力";
         text.textContent = result.analysis_text || result.analysis || "暂无分析结果";
 
-        const evidence = document.getElementById("evidenceList");
-        evidence.innerHTML = "";
-        let evidenceCount = 0;
+        const ragSummary = document.getElementById("summaryRag");
+        const ruleSummary = document.getElementById("summaryRules");
         if (analysisMode === "rag") {
-          if (result.semantic_hint && result.semantic_hint.applied) {
-            const semanticDiv = document.createElement("div");
-            semanticDiv.className = "evidence-item";
-            semanticDiv.innerHTML = `
-              <strong>语义补全：</strong>${esc(result.semantic_hint.normalized_text)}<br />
-              <span>${esc(result.semantic_hint.reason || "在原始 RAG/规则无命中时提供补全文本。")}</span>
-            `;
-            evidence.appendChild(semanticDiv);
-            evidenceCount += 1;
-          }
-
-          if (result.rag && Array.isArray(result.rag.rule_hits) && result.rag.rule_hits.length) {
-            const ruleDiv = document.createElement("div");
-            ruleDiv.className = "evidence-item";
-            ruleDiv.innerHTML = `<strong>规则命中：</strong>${esc(result.rag.rule_hits.join("、"))}`;
-            evidence.appendChild(ruleDiv);
-            evidenceCount += 1;
-          }
-
-          if (result.rag && Array.isArray(result.rag.hits) && result.rag.hits.length) {
-            result.rag.hits.slice(0, 5).forEach(hit => {
-              const div = document.createElement("div");
-              div.className = "evidence-item";
-              div.innerHTML = `
-                <strong>[${esc(hit.doc_type)}] ${esc(hit.title)}</strong><br />
-                ${esc(hit.text_snippet)}
-              `;
-              evidence.appendChild(div);
-              evidenceCount += 1;
-            });
-          }
+          const ragHits = result.rag && Array.isArray(result.rag.hits)
+            ? result.rag.hits.slice(0, 5).map(hit => `[${hit.doc_type}] ${hit.title}`)
+            : [];
+          const ruleHits = result.rag && Array.isArray(result.rag.rule_hits)
+            ? result.rag.rule_hits
+            : [];
+          ragSummary.textContent = ragHits.length ? ragHits.join("；") : "无";
+          ruleSummary.textContent = ruleHits.length ? ruleHits.join("、") : "无";
+        } else {
+          ragSummary.textContent = "未启用";
+          ruleSummary.textContent = "未启用";
         }
 
-        if (!evidenceCount) {
-          const div = document.createElement("div");
-          div.className = "evidence-item";
-          div.textContent = analysisMode === "rag"
-            ? "未检索到证据，当前结果由模型直判；如语义补全可用，会显示在这里。"
-            : "当前是模型直答模式，不显示检索结果。";
-          evidence.appendChild(div);
-        }
       }
 
       async function refreshStatus() {
@@ -1057,12 +1074,19 @@
           audFile ? `音频：${audFile.name}` : null,
         ].filter(Boolean).join(" ｜ ");
 
-        addMessage("user", "用户输入", summary || "未填写文本", state.mode === "baseline" ? "模型直答" : "默认 RAG");
+        let userModeLabel = "模型直答";
+        if (state.mode === "ocr_asr") {
+          userModeLabel = "OCR/ASR 增强";
+        }
+        if (state.mode === "rag") {
+          userModeLabel = "默认 RAG";
+        }
+        addMessage("user", "用户输入", summary || "未填写文本", userModeLabel);
         input.value = "";
 
         const image_b64 = imgFile ? await fileToBase64(imgFile) : "";
         const audio_b64 = audFile ? await fileToBase64(audFile) : "";
-        const ragEnabled = state.mode !== "baseline";
+        const ragEnabled = state.mode === "rag";
         const ragTopK = parseInt(document.getElementById("ragTopK").value || "5", 10);
         const ragMinScore = parseFloat(document.getElementById("ragMinScore").value || "0");
         const ragContextMaxChars = parseInt(document.getElementById("ragContextMaxChars").value || "480", 10);
@@ -1081,6 +1105,8 @@
           image_b64,
           audio_b64,
           mode: currentBackendMode(),
+          threshold_mode: "fixed",
+          threshold: 0.5,
           rag_enabled: ragEnabled,
           rag_augment_input: ragEnabled ? ragAugment : false,
           rag_top_k: ragTopK,
@@ -1141,12 +1167,6 @@
       renderFilePills();
 
       (async () => {
-        addMessage(
-          "agent",
-          "欢迎",
-          "这里会结合模型、OCR/ASR 与 RAG 证据进行分析。你可以直接输入文本，也可以上传图片或音频。\n\n如果状态停留在‘加载中’，请稍等几秒后再发送。",
-          "系统"
-        );
         for (;;) {
           const ok = await refreshStatus().catch(() => null);
           if (ok === true) break;

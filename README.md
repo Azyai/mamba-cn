@@ -21,6 +21,8 @@ python -m pip install ".[train]"
 # 图像处理所需依赖
 pip install pillow
 
+python -m pip install easyocr
+
 # (可选) Web端动态OCR和ASR所需依赖(仅在运行 web_toxicity_demo 时需要)
 pip install paddleocr paddlepaddle-gpu openai-whisper -i https://mirrors.aliyun.com/pypi/simple/
 # Linux 系统可能还需要安装 ffmpeg 以支持 whisper 音频解析
@@ -196,6 +198,14 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
 - `gate`：使用可学习门控按 token 动态融合前后向上下文，推荐用于攻击性、反讽、否定等需要完整上下文的文本检测。
 - `concat`：拼接前后向输出后线性投影回原维度，表达能力较强，但比 `add` 多一个投影层。
 
+实现细节（Bi-Mamba）：
+
+- 双向扫描的实现位于文本主干 `Mamba2Backbone` 内部，具体在 `mamba_ssm/models/mamba2_backbone.py`。当使用 `--bidirectional_layers N` 时，backbone 会对最后 N 层的 `Block` 逐层调用 `enable_bidirectional_`，这些 `Block` 内部负责反向序列的构建、调用 `backward_mixer`（或共享 forward mixer）计算反向特征，并按 `add`/`gate`/`concat` 策略融合前向/反向输出。[实现参考：Block.enable_bidirectional_](mamba_ssm/models/mamba2_backbone.py#L86) / [Mamba2Backbone.enable_bidirectional_](mamba_ssm/models/mamba2_backbone.py#L261)。
+
+- 训练时控制项：通过 `--bidirectional_share_mixer` 决定是否为 backward 创建独立 mixer（默认共享以节省显存），通过 `--bidirectional_train_backward` 在非共享时决定是否解冻 backward mixer 参与训练。默认做法是冻结主干，仅训练 LoRA、分类头与融合（gate/proj）层以降低计算与显存开销。
+
+## test 目录下的测试命令
+
 ## test 目录下的测试命令
 
 多模态 Web demo 演示（支持纯文本、纯图片、纯音频或任意多模态组合输入）：
@@ -232,9 +242,12 @@ python -m mamba_ssm.rag.build_index \
 ### 启用 RAG/Agent 的 Web Demo
 
 ```bash
+
+export HF_ENDPOINT=https://hf-mirror.com
 export DEEPSEEK_API_KEY=your_key
 export DEEPSEEK_BASE_URL=https://api.deepseek.com
 export DEEPSEEK_MODEL=deepseek-v4-pro
+
 
 CUDA_VISIBLE_DEVICES=0 python test/web_toxicity_demo/server.py \
   --run_dir runs/lora_2_8b_multimodal \
