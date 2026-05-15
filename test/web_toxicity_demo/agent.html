@@ -606,6 +606,21 @@
         padding: 0;
       }
 
+      .media-preview {
+        display: grid;
+        gap: 10px;
+        margin-top: 6px;
+      }
+
+      .media-preview img {
+        max-width: min(420px, 100%);
+        max-height: 260px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        object-fit: contain;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
       .hidden { display: none !important; }
 
       .is-disabled { opacity: 0.6; filter: saturate(0.8); }
@@ -836,6 +851,7 @@
               <span class="hint" id="hint"></span>
             </div>
             <div class="composer-row" id="filePills"></div>
+            <div class="media-preview" id="mediaPreview"></div>
           </div>
         </section>
       </div>
@@ -846,6 +862,8 @@
         mode: "rag",
         lastPipeline: null,
       };
+
+      let currentImageUrl = "";
 
       function esc(s) {
         return String(s ?? "")
@@ -951,6 +969,7 @@
 
       function renderFilePills() {
         const wrap = document.getElementById("filePills");
+        const preview = document.getElementById("mediaPreview");
         const img = document.getElementById("imageUpload").files[0];
         const aud = document.getElementById("audioUpload").files[0];
         const pills = [];
@@ -974,6 +993,17 @@
             renderFilePills();
           });
         });
+
+        if (currentImageUrl) {
+          URL.revokeObjectURL(currentImageUrl);
+          currentImageUrl = "";
+        }
+        if (img) {
+          currentImageUrl = URL.createObjectURL(img);
+          preview.innerHTML = `<img src="${currentImageUrl}" alt="上传图片预览" />`;
+        } else {
+          preview.innerHTML = "";
+        }
       }
 
       function renderInspector(result, pipeline, analysisMode) {
