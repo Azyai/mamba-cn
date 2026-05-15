@@ -441,6 +441,14 @@ def main() -> None:
     parser.add_argument("--eval_threshold_step", type=float, default=0.01)
     parser.add_argument("--eval_threshold_fpr_max", type=float, default=1.0)
     parser.add_argument("--eval_threshold_objective", type=str, default="macro_f1")
+    parser.add_argument("--paer_enable", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--paer_span_kernel_size", type=int, default=5)
+    parser.add_argument("--paer_topk", type=int, default=3)
+    parser.add_argument("--paer_beta", type=float, default=1.0)
+    parser.add_argument("--paer_lambda_logit", type=float, default=1.0)
+    parser.add_argument("--paer_dropout", type=float, default=0.1)
+    parser.add_argument("--paer_span_pooling", type=str, default="topk", choices=("topk", "noisy_or"))
+    parser.add_argument("--paer_balance_logits", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head_nvidia8b")
     args = parser.parse_args()
@@ -638,6 +646,14 @@ def main() -> None:
         text_dim=backbone.config.d_model,
         image_dim=args.image_dim,
         audio_dim=args.audio_dim,
+        paer_enable=bool(args.paer_enable),
+        paer_span_kernel_size=int(args.paer_span_kernel_size),
+        paer_topk=int(args.paer_topk),
+        paer_beta=float(args.paer_beta),
+        paer_lambda_logit=float(args.paer_lambda_logit),
+        paer_dropout=float(args.paer_dropout),
+        paer_span_pooling=str(args.paer_span_pooling),
+        paer_balance_logits=bool(args.paer_balance_logits),
     ).to(device)
     classifier.freeze_backbones_()
     if int(args.bidirectional_layers) > 0:
@@ -832,6 +848,10 @@ def main() -> None:
         head_params.append(classifier.blank_image)
     if getattr(classifier, "blank_audio", None) is not None and classifier.blank_audio.requires_grad:
         head_params.append(classifier.blank_audio)
+    if getattr(classifier, "paer_module", None) is not None:
+        for p in classifier.paer_module.parameters():
+            if p.requires_grad:
+                head_params.append(p)
 
     for p in head.parameters():
         if p.requires_grad:
@@ -1257,6 +1277,7 @@ def main() -> None:
                     "max_length": args.max_length,
                     "vit_name_or_path": args.vit_name_or_path,
                     "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
+                    "paer_config": classifier.paer_config_dict(),
                 }
                 if lora_cfg is not None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
@@ -1305,6 +1326,7 @@ def main() -> None:
             "num_labels": 2,
             "vit_name_or_path": args.vit_name_or_path,
             "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
+            "paer_config": classifier.paer_config_dict(),
         }
         if best_classifier_state is not None:
             full_ckpt["classifier_state"] = best_classifier_state

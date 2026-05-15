@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from mamba_ssm.models.paer_module import PAERModule
+
 
 def masked_mean_pool(last_hidden_state: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
     if attention_mask is None:
@@ -36,6 +38,8 @@ class MLPHead(nn.Module):
 class ForwardOutput:
     logits: torch.Tensor
     pooled: torch.Tensor
+    base_logits: Optional[torch.Tensor] = None
+    paer_aux: Optional[Dict[str, torch.Tensor]] = None
 
 
 class FrozenBackboneClassifier(nn.Module):
@@ -86,6 +90,16 @@ class MultimodalClassifier(nn.Module):
         text_dim: int = 2560,
         image_dim: int = 768,
         audio_dim: int = 768,
+        paer_enable: bool = False,
+        paer_span_kernel_size: int = 5,
+        paer_topk: int = 3,
+        paer_beta: float = 1.0,
+        paer_lambda_logit: float = 1.0,
+        paer_dropout: float = 0.1,
+        paer_span_pooling: str = "topk",
+        paer_use_modality_mask: bool = True,
+        paer_balance_logits: bool = False,
+        paer_toxic_label_id: int = 1,
     ):
         super().__init__()
         self.text_backbone = text_backbone
@@ -111,6 +125,24 @@ class MultimodalClassifier(nn.Module):
         self.audio_conf_proj = nn.Linear(text_dim, 1) if audio_backbone else None
         self.image_gate = nn.Sequential(nn.Linear(text_dim * 2 + 3, text_dim), nn.Sigmoid()) if image_backbone else None
         self.audio_gate = nn.Sequential(nn.Linear(text_dim * 2 + 3, text_dim), nn.Sigmoid()) if audio_backbone else None
+        self.paer_module = (
+            PAERModule(
+                text_hidden_size=text_dim,
+                fused_size=text_dim,
+                num_labels=2,
+                toxic_label_id=paer_toxic_label_id,
+                span_kernel_size=paer_span_kernel_size,
+                topk=paer_topk,
+                beta=paer_beta,
+                lambda_logit=paer_lambda_logit,
+                dropout=paer_dropout,
+                span_pooling=paer_span_pooling,
+                use_modality_mask=paer_use_modality_mask,
+                balance_logits=paer_balance_logits,
+            )
+            if paer_enable
+            else None
+        )
 
     @torch.no_grad()
     def freeze_backbones_(self) -> "MultimodalClassifier":
@@ -210,8 +242,24 @@ class MultimodalClassifier(nn.Module):
         if audio_feat is not None and g_aud is not None and audio_mask_f is not None:
             pooled = pooled + (audio_mask_f * g_aud * audio_feat)
             
-        logits = self.head(pooled)
-        return ForwardOutput(logits=logits, pooled=pooled)
+        base_logits = self.head(pooled)
+        logits = base_logits
+        paer_aux = None
+        if self.paer_module is not None:
+            logits, paer_aux = self.paer_module(
+                text_hidden_states=last_hidden_state,
+                fused_feat=pooled,
+                base_logits=base_logits,
+                attention_mask=outputs.get("attention_mask", attention_mask),
+                image_mask=image_mask_f,
+                audio_mask=audio_mask_f,
+            )
+        return ForwardOutput(logits=logits, pooled=pooled, base_logits=base_logits, paer_aux=paer_aux)
+
+    def paer_config_dict(self) -> Optional[Dict[str, object]]:
+        if self.paer_module is None:
+            return None
+        return self.paer_module.config_dict()
 
     def trainable_state_dict(self) -> Dict[str, object]:
         out = {"head": self.head.state_dict()}
@@ -231,5 +279,31 @@ class MultimodalClassifier(nn.Module):
             out["blank_image"] = self.blank_image.data.detach().cpu()
         if self.blank_audio is not None:
             out["blank_audio"] = self.blank_audio.data.detach().cpu()
+        if self.paer_module is not None:
+            out["paer_module"] = self.paer_module.state_dict()
+            out["paer_config"] = self.paer_module.config_dict()
         return out
+
+    def load_trainable_state_dict(self, state: Dict[str, object], strict: bool = False) -> None:
+        if not isinstance(state, dict):
+            return
+        module_names = [
+            "head",
+            "image_gate",
+            "audio_gate",
+            "image_conf_proj",
+            "audio_conf_proj",
+            "image_proj",
+            "audio_proj",
+            "paer_module",
+        ]
+        for name in module_names:
+            module = getattr(self, name, None)
+            module_state = state.get(name)
+            if module is not None and isinstance(module_state, dict):
+                module.load_state_dict(module_state, strict=strict)
+        if self.blank_image is not None and isinstance(state.get("blank_image"), torch.Tensor):
+            self.blank_image.data.copy_(state["blank_image"].to(device=self.blank_image.device, dtype=self.blank_image.dtype))
+        if self.blank_audio is not None and isinstance(state.get("blank_audio"), torch.Tensor):
+            self.blank_audio.data.copy_(state["blank_audio"].to(device=self.blank_audio.device, dtype=self.blank_audio.dtype))
 

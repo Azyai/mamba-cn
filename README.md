@@ -204,7 +204,70 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
 
 - 训练时控制项：通过 `--bidirectional_share_mixer` 决定是否为 backward 创建独立 mixer（默认共享以节省显存），通过 `--bidirectional_train_backward` 在非共享时决定是否解冻 backward mixer 参与训练。默认做法是冻结主干，仅训练 LoRA、分类头与融合（gate/proj）层以降低计算与显存开销。
 
-## test 目录下的测试命令
+### PAER 并联式反规避证据保持模块（可选）
+
+PAER（Parallel Anti-Evasion Evidence Retention）是新增的第二个功能模块，默认关闭，不影响原有 `Bi-Mamba2 + MRGF` 实验。启用后，模型会从文本主干输出的 token hidden states 拉出一条并联旁路，进行 toxic span evidence mining、evasion intent detection，并在 `MRGF + MLP` 得到 `base_logits` 后对 toxic logit 做风险校准。
+
+推荐把它作为第二阶段增量消融实验使用：
+
+```text
+Baseline + Bi-Mamba2 + MRGF
+Baseline + Bi-Mamba2 + MRGF + PAER
+```
+
+PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
+
+```bash
+--paer_enable \
+--paer_span_kernel_size 5 \
+--paer_topk 3 \
+--paer_beta 1.0 \
+--paer_lambda_logit 1.0 \
+--paer_span_pooling topk
+```
+
+常用参数说明：
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--paer_enable` | `False` | 启用 PAER 风险校准模块 |
+| `--paer_span_kernel_size` | `5` | span-level toxic evidence 的局部卷积窗口，建议使用奇数 |
+| `--paer_topk` | `3` | toxic span / evasion risk 的 Top-K pooling 数量 |
+| `--paer_beta` | `1.0` | evasion risk 对 toxic logit 增强项的调节系数 |
+| `--paer_lambda_logit` | `1.0` | PAER 对 toxic logit 的整体校准强度 |
+| `--paer_span_pooling` | `topk` | span 风险聚合方式，可选 `topk` 或 `noisy_or` |
+| `--paer_balance_logits` | `False` | 可选项；启用后在增强 toxic logit 的同时轻微降低 non-toxic logit |
+
+完整 8B 组合示例：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
+  --datasets cold,toxicn \
+  --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
+  --toxicn_dev_ratio 0.1 \
+  --fp16 \
+  --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
+  --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
+  --vit_name_or_path OFA-Sys/chinese-clip-vit-base-patch16 \
+  --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
+  --bidirectional_layers 4 \
+  --bidirectional_fusion gate \
+  --bidirectional_share_mixer \
+  --paer_enable \
+  --paer_span_kernel_size 5 \
+  --paer_topk 3 \
+  --paer_beta 1.0 \
+  --paer_lambda_logit 1.0 \
+  --paer_span_pooling topk \
+  --save_dir runs/lora_8_b_bimamba2_mrgf_paer
+```
+
+实现位置：
+
+- `mamba_ssm/models/paer_module.py`：PAERModule 与可选 PAERLoss
+- `mamba_ssm/models/offensive_classifier.py`：在 `MultimodalClassifier` 中接入 PAER，并返回 `base_logits` / `paer_aux`
+- `train/train_offensive.py`、`train/train_offensive_nvidia8b.py`：训练参数与 checkpoint 保存
+- `train/offensive_infer.py`：推理时根据 checkpoint 自动重建 PAER
 
 ## test 目录下的测试命令
 

@@ -449,6 +449,14 @@ def main() -> None:
     parser.add_argument("--audio_dim", type=int, default=768)
     parser.add_argument("--image_drop_prob", type=float, default=0.0)
     parser.add_argument("--audio_drop_prob", type=float, default=0.0)
+    parser.add_argument("--paer_enable", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--paer_span_kernel_size", type=int, default=5)
+    parser.add_argument("--paer_topk", type=int, default=3)
+    parser.add_argument("--paer_beta", type=float, default=1.0)
+    parser.add_argument("--paer_lambda_logit", type=float, default=1.0)
+    parser.add_argument("--paer_dropout", type=float, default=0.1)
+    parser.add_argument("--paer_span_pooling", type=str, default="topk", choices=("topk", "noisy_or"))
+    parser.add_argument("--paer_balance_logits", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_full_model", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
@@ -544,6 +552,14 @@ def main() -> None:
         text_dim=backbone.config.d_model,
         image_dim=args.image_dim,
         audio_dim=args.audio_dim,
+        paer_enable=bool(args.paer_enable),
+        paer_span_kernel_size=int(args.paer_span_kernel_size),
+        paer_topk=int(args.paer_topk),
+        paer_beta=float(args.paer_beta),
+        paer_lambda_logit=float(args.paer_lambda_logit),
+        paer_dropout=float(args.paer_dropout),
+        paer_span_pooling=str(args.paer_span_pooling),
+        paer_balance_logits=bool(args.paer_balance_logits),
     ).to(device)
     classifier.freeze_backbones_()
 
@@ -766,7 +782,7 @@ def main() -> None:
             continue
         if name.endswith(".lora_A") or name.endswith(".lora_B"):
             lora_params.append(p)
-        elif "head." in name or "blank_" in name or "image_proj" in name or "audio_proj" in name or "image_gate" in name or "audio_gate" in name or "image_conf_proj" in name or "audio_conf_proj" in name:
+        elif "head." in name or "paer_module" in name or "blank_" in name or "image_proj" in name or "audio_proj" in name or "image_gate" in name or "audio_gate" in name or "image_conf_proj" in name or "audio_conf_proj" in name:
             head_params.append(p)
         elif ".norm." in name or name.startswith("text_backbone.norm_f.") or ".norm_f." in name:
             norm_params.append(p)
@@ -847,6 +863,7 @@ def main() -> None:
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda" and amp_dtype == torch.float16))
     global_step = 0
     best_head_state = None
+    best_classifier_state = None
     best_metrics: Dict[str, object] = {}
 
     def forward_logits(
@@ -1215,6 +1232,7 @@ def main() -> None:
                     "max_length": args.max_length,
                     "vit_name_or_path": args.vit_name_or_path,
                     "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
+                    "paer_config": classifier.paer_config_dict(),
                 }
                 if lora_cfg is not None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
@@ -1246,7 +1264,10 @@ def main() -> None:
             "num_labels": 2,
             "vit_name_or_path": args.vit_name_or_path,
             "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
+            "paer_config": classifier.paer_config_dict(),
         }
+        if best_classifier_state is not None:
+            full_ckpt["classifier_state"] = best_classifier_state
         if classifier.blank_image is not None:
             full_ckpt["blank_image"] = classifier.blank_image.data.detach().cpu()
         if classifier.blank_audio is not None:

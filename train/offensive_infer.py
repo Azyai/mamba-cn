@@ -56,6 +56,45 @@ def _extract_calibrated_threshold(metrics: Dict[str, Any], *, dataset: str) -> O
     return None
 
 
+def _paer_config_from_checkpoint(ckpt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    cfg = ckpt.get("paer_config", None)
+    if isinstance(cfg, dict):
+        return cfg
+    classifier_state = ckpt.get("classifier_state", None)
+    if isinstance(classifier_state, dict):
+        cfg = classifier_state.get("paer_config", None)
+        if isinstance(cfg, dict):
+            return cfg
+    return None
+
+
+def _paer_kwargs_from_checkpoint(ckpt: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = _paer_config_from_checkpoint(ckpt)
+    if not cfg:
+        return {"paer_enable": False}
+    return {
+        "paer_enable": True,
+        "paer_span_kernel_size": int(cfg.get("span_kernel_size", 5)),
+        "paer_topk": int(cfg.get("topk", 3)),
+        "paer_beta": float(cfg.get("beta", 1.0)),
+        "paer_lambda_logit": float(cfg.get("lambda_logit", 1.0)),
+        "paer_dropout": 0.0,
+        "paer_span_pooling": str(cfg.get("span_pooling", "topk")),
+        "paer_use_modality_mask": bool(cfg.get("use_modality_mask", True)),
+        "paer_balance_logits": bool(cfg.get("balance_logits", False)),
+        "paer_toxic_label_id": int(cfg.get("toxic_label_id", 1)),
+    }
+
+
+def _load_classifier_trainable_state(model: MultimodalClassifier, state: Any) -> None:
+    if not isinstance(state, dict):
+        return
+    if hasattr(model, "load_trainable_state_dict"):
+        model.load_trainable_state_dict(state, strict=False)
+    else:
+        model.load_state_dict(state, strict=False)
+
+
 def _maybe_load_transformers_tokenizer(name_or_path: str, cache_dir: str = None):
     try:
         from transformers import AutoTokenizer
@@ -452,9 +491,10 @@ def load_offensive_predictor(
                 audio_backbone=audio_backbone,
                 text_dim=text_dim,
                 image_dim=768,
-                audio_dim=768
+                audio_dim=768,
+                **_paer_kwargs_from_checkpoint(ckpt),
             ).to(dev, dtype=dt)
-            model.load_state_dict(ckpt["classifier_state"], strict=False)
+            _load_classifier_trainable_state(model, ckpt["classifier_state"])
         else:
             image_processor = None
             audio_processor = None
@@ -577,9 +617,10 @@ def load_offensive_predictor(
             audio_backbone=audio_backbone,
             text_dim=text_dim,
             image_dim=768,
-            audio_dim=768
+            audio_dim=768,
+            **_paer_kwargs_from_checkpoint(ckpt),
         ).to(dev, dtype=dt)
-        model.load_state_dict(ckpt["classifier_state"], strict=False)
+        _load_classifier_trainable_state(model, ckpt["classifier_state"])
     else:
         image_processor = None
         audio_processor = None
