@@ -128,6 +128,41 @@ def _infer_head_input_dim(head_state: Dict[str, torch.Tensor]) -> int:
     return int(w.shape[1])
 
 
+def _hear_kwargs_from_checkpoint(ckpt: Dict[str, Any]) -> Dict[str, Any]:
+    classifier_state = ckpt.get("classifier_state", None)
+    cfg = ckpt.get("hear_config", None)
+    if cfg is None and isinstance(classifier_state, dict):
+        cfg = classifier_state.get("hear_config", None)
+    if not isinstance(cfg, dict) or not bool(cfg.get("hear_enable", False)):
+        return {"hear_enable": False}
+    return {
+        "hear_enable": True,
+        "hear_num_sources": int(cfg.get("hear_num_sources", 4)),
+        "hear_max_position": int(cfg.get("hear_max_position", 512)),
+        "hear_max_segments": int(cfg.get("hear_max_segments", 16)),
+        "hear_span_kernel_sizes": tuple(int(x) for x in cfg.get("hear_span_kernel_sizes", (3, 5, 7))),
+        "hear_topk": int(cfg.get("hear_topk", 5)),
+        "hear_adapter_hidden": int(cfg.get("hear_adapter_hidden", 256)),
+        "hear_dropout": float(cfg.get("hear_dropout", 0.0)),
+    }
+
+
+def _load_classifier_state(model: MultimodalClassifier, state: Any) -> None:
+    if not isinstance(state, dict):
+        return
+    if any(isinstance(k, str) and "." in k for k in state):
+        model.load_state_dict(state, strict=False)
+        return
+    for name, value in state.items():
+        if name == "hear_config":
+            continue
+        target = getattr(model, name, None)
+        if isinstance(target, torch.nn.Parameter) and isinstance(value, torch.Tensor):
+            target.data.copy_(value.to(device=target.device, dtype=target.dtype))
+        elif isinstance(target, torch.nn.Module) and isinstance(value, dict):
+            target.load_state_dict(value, strict=False)
+
+
 def _load_image_backbone(name_or_path: str, *, cache_dir: Path, device: torch.device, dtype: torch.dtype) -> torch.nn.Module:
     from transformers import AutoModel
 
@@ -452,9 +487,10 @@ def load_offensive_predictor(
                 audio_backbone=audio_backbone,
                 text_dim=text_dim,
                 image_dim=768,
-                audio_dim=768
+                audio_dim=768,
+                **_hear_kwargs_from_checkpoint(ckpt),
             ).to(dev, dtype=dt)
-            model.load_state_dict(ckpt["classifier_state"], strict=False)
+            _load_classifier_state(model, ckpt["classifier_state"])
         else:
             image_processor = None
             audio_processor = None
@@ -577,9 +613,10 @@ def load_offensive_predictor(
             audio_backbone=audio_backbone,
             text_dim=text_dim,
             image_dim=768,
-            audio_dim=768
+            audio_dim=768,
+            **_hear_kwargs_from_checkpoint(ckpt),
         ).to(dev, dtype=dt)
-        model.load_state_dict(ckpt["classifier_state"], strict=False)
+        _load_classifier_state(model, ckpt["classifier_state"])
     else:
         image_processor = None
         audio_processor = None

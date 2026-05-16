@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from mamba_ssm.models.hear_module import HEARModule
 
 
 def masked_mean_pool(last_hidden_state: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
@@ -36,6 +38,8 @@ class MLPHead(nn.Module):
 class ForwardOutput:
     logits: torch.Tensor
     pooled: torch.Tensor
+    base_logits: Optional[torch.Tensor] = None
+    hear_aux: Optional[Dict[str, object]] = None
 
 
 class FrozenBackboneClassifier(nn.Module):
@@ -86,6 +90,14 @@ class MultimodalClassifier(nn.Module):
         text_dim: int = 2560,
         image_dim: int = 768,
         audio_dim: int = 768,
+        hear_enable: bool = False,
+        hear_num_sources: int = 4,
+        hear_max_position: int = 512,
+        hear_max_segments: int = 16,
+        hear_span_kernel_sizes: Sequence[int] = (3, 5, 7),
+        hear_topk: int = 5,
+        hear_adapter_hidden: int = 256,
+        hear_dropout: float = 0.1,
     ):
         super().__init__()
         self.text_backbone = text_backbone
@@ -111,6 +123,32 @@ class MultimodalClassifier(nn.Module):
         self.audio_conf_proj = nn.Linear(text_dim, 1) if audio_backbone else None
         self.image_gate = nn.Sequential(nn.Linear(text_dim * 2 + 3, text_dim), nn.Sigmoid()) if image_backbone else None
         self.audio_gate = nn.Sequential(nn.Linear(text_dim * 2 + 3, text_dim), nn.Sigmoid()) if audio_backbone else None
+        self.hear_config = {
+            "hear_enable": bool(hear_enable),
+            "hear_num_sources": int(hear_num_sources),
+            "hear_max_position": int(hear_max_position),
+            "hear_max_segments": int(hear_max_segments),
+            "hear_span_kernel_sizes": [int(x) for x in hear_span_kernel_sizes],
+            "hear_topk": int(hear_topk),
+            "hear_adapter_hidden": int(hear_adapter_hidden),
+            "hear_dropout": float(hear_dropout),
+        }
+        self.hear_module = (
+            HEARModule(
+                text_hidden_size=text_dim,
+                fused_size=text_dim,
+                num_sources=hear_num_sources,
+                max_position=hear_max_position,
+                max_segments=hear_max_segments,
+                span_kernel_sizes=tuple(int(x) for x in hear_span_kernel_sizes),
+                topk=hear_topk,
+                adapter_hidden=hear_adapter_hidden,
+                dropout=hear_dropout,
+                use_modality_mask=True,
+            )
+            if hear_enable
+            else None
+        )
 
     @torch.no_grad()
     def freeze_backbones_(self) -> "MultimodalClassifier":
@@ -132,6 +170,8 @@ class MultimodalClassifier(nn.Module):
         image_mask: Optional[torch.Tensor] = None,
         input_values: Optional[torch.Tensor] = None,
         audio_mask: Optional[torch.Tensor] = None,
+        source_ids: Optional[torch.Tensor] = None,
+        segment_ids: Optional[torch.Tensor] = None,
     ) -> ForwardOutput:
         batch_size = 1
         device = self.head.fc1.weight.device
@@ -209,9 +249,21 @@ class MultimodalClassifier(nn.Module):
             pooled = pooled + (image_mask_f * g_img * image_feat)
         if audio_feat is not None and g_aud is not None and audio_mask_f is not None:
             pooled = pooled + (audio_mask_f * g_aud * audio_feat)
-            
+
+        hear_aux = None
+        if self.hear_module is not None:
+            pooled, hear_aux = self.hear_module(
+                text_hidden_states=last_hidden_state,
+                fused_feat=pooled,
+                attention_mask=attention_mask,
+                source_ids=source_ids,
+                segment_ids=segment_ids,
+                image_mask=image_mask_f,
+                audio_mask=audio_mask_f,
+            )
+
         logits = self.head(pooled)
-        return ForwardOutput(logits=logits, pooled=pooled)
+        return ForwardOutput(logits=logits, pooled=pooled, base_logits=None, hear_aux=hear_aux)
 
     def trainable_state_dict(self) -> Dict[str, object]:
         out = {"head": self.head.state_dict()}
@@ -223,6 +275,9 @@ class MultimodalClassifier(nn.Module):
             out["image_conf_proj"] = self.image_conf_proj.state_dict()
         if self.audio_conf_proj is not None:
             out["audio_conf_proj"] = self.audio_conf_proj.state_dict()
+        if self.hear_module is not None:
+            out["hear_module"] = self.hear_module.state_dict()
+            out["hear_config"] = dict(self.hear_config)
         if self.image_proj is not None:
             out["image_proj"] = self.image_proj.state_dict()
         if self.audio_proj is not None:

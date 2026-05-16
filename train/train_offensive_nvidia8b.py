@@ -340,6 +340,15 @@ def normalize_path_arg(value: str) -> str:
     return value.replace("\\", "/")
 
 
+def parse_int_list_arg(value: str) -> Tuple[int, ...]:
+    items = []
+    for part in str(value).split(","):
+        part = part.strip()
+        if part:
+            items.append(int(part))
+    return tuple(items) or (3, 5, 7)
+
+
 def _load_image_backbone(name_or_path: str, *, cache_dir: Path, device: torch.device) -> torch.nn.Module:
     from transformers import AutoModel
 
@@ -380,6 +389,14 @@ def main() -> None:
     parser.add_argument("--audio_dim", type=int, default=768)
     parser.add_argument("--image_drop_prob", type=float, default=0.0)
     parser.add_argument("--audio_drop_prob", type=float, default=0.0)
+    parser.add_argument("--hear_enable", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--hear_num_sources", type=int, default=4)
+    parser.add_argument("--hear_max_position", type=int, default=512)
+    parser.add_argument("--hear_max_segments", type=int, default=16)
+    parser.add_argument("--hear_span_kernel_sizes", type=str, default="3,5,7")
+    parser.add_argument("--hear_topk", type=int, default=5)
+    parser.add_argument("--hear_adapter_hidden", type=int, default=256)
+    parser.add_argument("--hear_dropout", type=float, default=0.1)
 
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
@@ -638,6 +655,14 @@ def main() -> None:
         text_dim=backbone.config.d_model,
         image_dim=args.image_dim,
         audio_dim=args.audio_dim,
+        hear_enable=bool(args.hear_enable),
+        hear_num_sources=int(args.hear_num_sources),
+        hear_max_position=int(args.hear_max_position),
+        hear_max_segments=int(args.hear_max_segments),
+        hear_span_kernel_sizes=parse_int_list_arg(args.hear_span_kernel_sizes),
+        hear_topk=int(args.hear_topk),
+        hear_adapter_hidden=int(args.hear_adapter_hidden),
+        hear_dropout=float(args.hear_dropout),
     ).to(device)
     classifier.freeze_backbones_()
     if int(args.bidirectional_layers) > 0:
@@ -832,6 +857,10 @@ def main() -> None:
         head_params.append(classifier.blank_image)
     if getattr(classifier, "blank_audio", None) is not None and classifier.blank_audio.requires_grad:
         head_params.append(classifier.blank_audio)
+    if getattr(classifier, "hear_module", None) is not None:
+        for p in classifier.hear_module.parameters():
+            if p.requires_grad:
+                head_params.append(p)
 
     for p in head.parameters():
         if p.requires_grad:
@@ -934,6 +963,8 @@ def main() -> None:
             else:
                 backbone.eval()
             head.train()
+            if getattr(classifier, "hear_module", None) is not None:
+                classifier.hear_module.train()
             optimizer.zero_grad(set_to_none=True)
             step = 0
             total_loss = 0.0
@@ -1108,6 +1139,8 @@ def main() -> None:
 
             head.eval()
             backbone.eval()
+            if getattr(classifier, "hear_module", None) is not None:
+                classifier.hear_module.eval()
             eval_metrics: Dict[str, Dict[str, float]] = {}
             with torch.no_grad():
                 for ds_name, dev_loader in dev_loaders.items():
@@ -1258,6 +1291,8 @@ def main() -> None:
                     "vit_name_or_path": args.vit_name_or_path,
                     "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
                 }
+                if getattr(classifier, "hear_module", None) is not None:
+                    ckpt["hear_config"] = dict(classifier.hear_config)
                 if lora_cfg is not None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
                     ckpt["lora_cfg"] = json.loads(lora_cfg.to_json())
@@ -1308,6 +1343,8 @@ def main() -> None:
         }
         if best_classifier_state is not None:
             full_ckpt["classifier_state"] = best_classifier_state
+        if getattr(classifier, "hear_module", None) is not None:
+            full_ckpt["hear_config"] = dict(classifier.hear_config)
         if lora_cfg is not None:
             full_ckpt["lora_cfg"] = json.loads(lora_cfg.to_json())
             full_ckpt["lora_replaced"] = list(lora_replaced)

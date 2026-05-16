@@ -113,6 +113,30 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
   --save_dir runs/lora_2_8b_multimodal
 ```
 
+### 2.8B + HEAR 训练脚本
+
+HEAR（Hierarchical Evidence Anti-evasion Retention）用于在 MRGF 融合特征进入分类头之前，额外保留 token/span/segment 级 toxic evidence，并检测免责声明、伪指令和后缀洗白等规避意图。当前实现默认关闭；加入 `--hear_enable` 后启用。
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
+  --pretrained_dir predict/mamba2-2.8b \
+  --tokenizer_name_or_path gpt2 \
+  --vit_name_or_path OFA-Sys/chinese-clip-vit-base-patch16 \
+  --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
+  --datasets cold,toxicn \
+  --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
+  --toxicn_dev_ratio 0.1 \
+  --fp16 \
+  --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
+  --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
+  --hear_enable \
+  --hear_topk 5 \
+  --hear_span_kernel_sizes 3,5,7 \
+  --hear_adapter_hidden 256 \
+  --save_dir runs/lora_2_8b_multimodal_hear
+```
+
 参数说明（新增多模态参数）：
 
 | 参数 | 作用 | 取值范围/说明 |
@@ -124,6 +148,11 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
 | `--audio_dim` | 听觉特征维度 | 默认 768 |
 | `--image_drop_prob` | 图像模态随机丢弃概率 | 默认 0.0 表示不丢弃；数值越高表示训练时随机置空图像模态的比例越大，用于缺失模态鲁棒训练 |
 | `--audio_drop_prob` | 音频模态随机丢弃概率 | 默认 0.0 表示不丢弃；数值越高表示训练时随机置空音频模态的比例越大，用于缺失模态鲁棒训练 |
+| `--hear_enable` | 启用 HEAR 层次化反规避证据保持模块 | 默认关闭；开启后接在 MRGF 输出和 MLP 分类头之间 |
+| `--hear_topk` | HEAR 证据风险池化的 Top-K 数量 | 默认 5，用于 token/span/segment 和 evasion 风险聚合 |
+| `--hear_span_kernel_sizes` | span-level evidence 的 Conv1D 多尺度窗口 | 默认 `3,5,7` |
+| `--hear_adapter_hidden` | Evidence Retention Adapter 的隐藏层维度 | 默认 256；8B 可按显存调整到 512 |
+| `--hear_max_segments` | segment-level evidence 的最大分段数量 | 默认 16；不传 `segment_ids` 时自动退化为单 segment |
 
 其他参数继承原文本分类任务配置。
 
@@ -168,6 +197,41 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --bidirectional_share_mixer \
   --save_dir runs/lora_8_b_bimamba2_multimodal
 ```
+
+### 8B + Bi-Mamba2 + MRGF + HEAR 主实验脚本
+
+论文主实验可以使用下面这条命令，对应：
+
+```text
+Mamba2 Backbone
+  -> Bi-Mamba2 Context Enhancement
+  -> MRGF Missing-modality Reliable Gated Fusion
+  -> HEAR Hierarchical Evidence Anti-evasion Retention
+  -> MLP Classifier
+```
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
+  --datasets cold,toxicn \
+  --toxicn_csv dataset/ToxiCN/ToxiCN_1.0.csv \
+  --toxicn_dev_ratio 0.1 \
+  --fp16 \
+  --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
+  --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
+  --vit_name_or_path OFA-Sys/chinese-clip-vit-base-patch16 \
+  --wav2vec2_name_or_path facebook/wav2vec2-base-960h \
+  --bidirectional_layers 4 \
+  --bidirectional_fusion gate \
+  --bidirectional_share_mixer \
+  --hear_enable \
+  --hear_topk 5 \
+  --hear_span_kernel_sizes 3,5,7 \
+  --hear_adapter_hidden 256 \
+  --save_dir runs/lora_8_b_bimamba_mrgf_hear
+```
+
+如果显存充足，可以把 `--hear_adapter_hidden 256` 调整为 `512`；如果显存紧张，优先保留 `--hear_enable`，再降低 `batch_size` 或增加 `grad_accum`。
 
 双向扫描参数说明：
 
