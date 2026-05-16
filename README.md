@@ -206,7 +206,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
 
 ### PAER 并联式反规避证据保持模块（可选）
 
-PAER（Parallel Anti-Evasion Evidence Retention）是新增的第二个功能模块，默认关闭，不影响原有 `Bi-Mamba2 + MRGF` 实验。启用后，模型会从文本主干输出的 token hidden states 拉出一条并联旁路，进行 toxic span evidence mining、evasion intent detection，并在 `MRGF + MLP` 得到 `base_logits` 后对 toxic logit 做风险校准。
+PAER（Parallel Anti-Evasion Evidence Retention）是新增的第二个功能模块，默认关闭，不影响原有 `Bi-Mamba2 + MRGF` 实验。启用后，模型会从文本主干输出的 token hidden states 拉出一条并联旁路，进行 toxic span evidence mining、evasion intent detection，并在 `MRGF + MLP` 得到 `base_logits` 后做残差式风险校准。当前默认使用 `residual` 校准模式，初始化时 `risk_delta=0`，因此刚开启 PAER 时模型等价于原始 `base_logits`，训练后再由数据学习是否增强或抑制 toxic logit。
 
 推荐把它作为第二阶段增量消融实验使用：
 
@@ -223,7 +223,9 @@ PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
 --paer_topk 3 \
 --paer_beta 1.0 \
 --paer_lambda_logit 1.0 \
---paer_span_pooling topk
+--paer_span_pooling topk \
+--paer_calibration_mode residual \
+--paer_max_delta 2.0
 ```
 
 常用参数说明：
@@ -237,6 +239,8 @@ PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
 | `--paer_lambda_logit` | `1.0` | PAER 对 toxic logit 的整体校准强度 |
 | `--paer_span_pooling` | `topk` | span 风险聚合方式，可选 `topk` 或 `noisy_or` |
 | `--paer_balance_logits` | `False` | 可选项；启用后在增强 toxic logit 的同时轻微降低 non-toxic logit |
+| `--paer_calibration_mode` | `residual` | 校准方式；`residual` 初始不改变 base logits，`positive` 保留旧版只增强 toxic logit 的行为 |
+| `--paer_max_delta` | `2.0` | residual 模式下单次校准的最大幅度上限 |
 
 完整 8B 组合示例：
 
@@ -259,6 +263,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --paer_beta 1.0 \
   --paer_lambda_logit 1.0 \
   --paer_span_pooling topk \
+  --paer_calibration_mode residual \
+  --paer_max_delta 2.0 \
   --save_dir runs/lora_8_b_bimamba2_mrgf_paer
 ```
 

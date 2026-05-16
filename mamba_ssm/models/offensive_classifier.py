@@ -100,6 +100,8 @@ class MultimodalClassifier(nn.Module):
         paer_use_modality_mask: bool = True,
         paer_balance_logits: bool = False,
         paer_toxic_label_id: int = 1,
+        paer_calibration_mode: str = "residual",
+        paer_max_delta: float = 2.0,
     ):
         super().__init__()
         self.text_backbone = text_backbone
@@ -139,6 +141,8 @@ class MultimodalClassifier(nn.Module):
                 span_pooling=paer_span_pooling,
                 use_modality_mask=paer_use_modality_mask,
                 balance_logits=paer_balance_logits,
+                calibration_mode=paer_calibration_mode,
+                max_delta=paer_max_delta,
             )
             if paer_enable
             else None

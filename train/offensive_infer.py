@@ -83,6 +83,8 @@ def _paer_kwargs_from_checkpoint(ckpt: Dict[str, Any]) -> Dict[str, Any]:
         "paer_use_modality_mask": bool(cfg.get("use_modality_mask", True)),
         "paer_balance_logits": bool(cfg.get("balance_logits", False)),
         "paer_toxic_label_id": int(cfg.get("toxic_label_id", 1)),
+        "paer_calibration_mode": str(cfg.get("calibration_mode", "residual")),
+        "paer_max_delta": float(cfg.get("max_delta", 2.0)),
     }
 
 

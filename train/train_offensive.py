@@ -457,6 +457,8 @@ def main() -> None:
     parser.add_argument("--paer_dropout", type=float, default=0.1)
     parser.add_argument("--paer_span_pooling", type=str, default="topk", choices=("topk", "noisy_or"))
     parser.add_argument("--paer_balance_logits", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--paer_calibration_mode", type=str, default="residual", choices=("residual", "positive"))
+    parser.add_argument("--paer_max_delta", type=float, default=2.0)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_full_model", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
@@ -560,6 +562,8 @@ def main() -> None:
         paer_dropout=float(args.paer_dropout),
         paer_span_pooling=str(args.paer_span_pooling),
         paer_balance_logits=bool(args.paer_balance_logits),
+        paer_calibration_mode=str(args.paer_calibration_mode),
+        paer_max_delta=float(args.paer_max_delta),
     ).to(device)
     classifier.freeze_backbones_()
 

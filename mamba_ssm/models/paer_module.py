@@ -29,6 +29,8 @@ class PAERModule(nn.Module):
         span_pooling: str = "topk",
         use_modality_mask: bool = True,
         balance_logits: bool = False,
+        calibration_mode: str = "residual",
+        max_delta: float = 2.0,
     ) -> None:
         super().__init__()
         if num_labels != 2:
@@ -37,6 +39,8 @@ class PAERModule(nn.Module):
             raise ValueError("toxic_label_id must be 0 or 1.")
         if span_pooling not in {"topk", "noisy_or"}:
             raise ValueError("span_pooling must be 'topk' or 'noisy_or'.")
+        if calibration_mode not in {"residual", "positive"}:
+            raise ValueError("calibration_mode must be 'residual' or 'positive'.")
         if span_kernel_size < 1:
             raise ValueError("span_kernel_size must be positive.")
         if span_kernel_size % 2 == 0:
@@ -55,6 +59,8 @@ class PAERModule(nn.Module):
         self.span_pooling = str(span_pooling)
         self.use_modality_mask = bool(use_modality_mask)
         self.balance_logits = bool(balance_logits)
+        self.calibration_mode = str(calibration_mode)
+        self.max_delta = float(max_delta)
 
         mid_dim = max(64, self.text_hidden_size // 2)
 
@@ -91,6 +97,7 @@ class PAERModule(nn.Module):
         gate_input_dim = self.fused_size + self.text_hidden_size + 2
         if self.use_modality_mask:
             gate_input_dim += 2
+        self.gate_input_dim = int(gate_input_dim)
         self.risk_gate = nn.Sequential(
             nn.LayerNorm(gate_input_dim),
             nn.Linear(gate_input_dim, mid_dim),
@@ -99,6 +106,15 @@ class PAERModule(nn.Module):
             nn.Linear(mid_dim, 1),
             nn.Sigmoid(),
         )
+        self.residual_calibrator = nn.Sequential(
+            nn.LayerNorm(gate_input_dim + 2),
+            nn.Linear(gate_input_dim + 2, mid_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mid_dim, 1),
+        )
+        nn.init.zeros_(self.residual_calibrator[-1].weight)
+        nn.init.zeros_(self.residual_calibrator[-1].bias)
 
     def config_dict(self) -> Dict[str, object]:
         return {
@@ -114,6 +130,8 @@ class PAERModule(nn.Module):
             "span_pooling": self.span_pooling,
             "use_modality_mask": self.use_modality_mask,
             "balance_logits": self.balance_logits,
+            "calibration_mode": self.calibration_mode,
+            "max_delta": self.max_delta,
         }
 
     @staticmethod
@@ -181,7 +199,23 @@ class PAERModule(nn.Module):
         gate_input = torch.cat(gate_inputs, dim=-1)
         risk_gate = self.risk_gate(gate_input)
 
-        risk_delta = self.lambda_logit * risk_gate * p_span * (1.0 + self.beta * p_evasion)
+        risk_strength = p_span * (1.0 + self.beta * p_evasion)
+        base_probs = F.softmax(base_logits, dim=-1)
+        base_toxic_prob = base_probs[:, self.toxic_label_id].unsqueeze(-1)
+        base_margin = (
+            base_logits[:, self.toxic_label_id] - base_logits[:, self.non_toxic_label_id]
+        ).unsqueeze(-1)
+
+        if self.calibration_mode == "positive":
+            risk_direction = torch.ones_like(risk_gate)
+            calibration_logits = torch.zeros_like(risk_gate)
+            risk_delta = self.lambda_logit * risk_gate * risk_strength
+        else:
+            calibrator_input = torch.cat([gate_input, base_toxic_prob, base_margin], dim=-1)
+            calibration_logits = self.residual_calibrator(calibrator_input)
+            risk_direction = torch.tanh(calibration_logits)
+            risk_delta = self.lambda_logit * self.max_delta * risk_gate * risk_strength * risk_direction
+
         final_logits = base_logits.clone()
         final_logits[:, self.toxic_label_id] = final_logits[:, self.toxic_label_id] + risk_delta.squeeze(-1)
         if self.balance_logits:
@@ -202,6 +236,11 @@ class PAERModule(nn.Module):
             "evasion_probs": evasion_probs,
             "p_evasion": p_evasion,
             "risk_gate": risk_gate,
+            "risk_strength": risk_strength,
+            "risk_direction": risk_direction,
+            "calibration_logits": calibration_logits,
+            "base_toxic_prob": base_toxic_prob,
+            "base_margin": base_margin,
             "risk_delta": risk_delta,
         }
         return final_logits, aux_outputs
