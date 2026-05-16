@@ -341,6 +341,7 @@ class HEARModule(nn.Module):
         text_hidden_size: int,
         fused_size: int,
         *,
+        evidence_hidden_size: Optional[int] = None,
         num_sources: int = 4,
         max_position: int = 512,
         max_segments: int = 16,
@@ -351,22 +352,36 @@ class HEARModule(nn.Module):
         use_modality_mask: bool = True,
     ) -> None:
         super().__init__()
+        evidence_hidden_size = int(evidence_hidden_size or min(512, text_hidden_size))
+        self.text_hidden_size = int(text_hidden_size)
+        self.evidence_hidden_size = int(evidence_hidden_size)
+        self.hidden_proj: nn.Module
+        if self.evidence_hidden_size == self.text_hidden_size:
+            self.hidden_proj = nn.Identity()
+        else:
+            self.hidden_proj = nn.Sequential(
+                nn.LayerNorm(text_hidden_size),
+                nn.Linear(text_hidden_size, self.evidence_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+
         self.source_tagger = SourceAwareSequenceTagging(
-            hidden_size=text_hidden_size,
+            hidden_size=self.evidence_hidden_size,
             num_sources=num_sources,
             max_position=max_position,
             dropout=dropout,
         )
         self.toxic_miner = HierarchicalToxicEvidenceMining(
-            hidden_size=text_hidden_size,
+            hidden_size=self.evidence_hidden_size,
             span_kernel_sizes=span_kernel_sizes,
             topk=topk,
             max_segments=max_segments,
             dropout=dropout,
         )
-        self.evasion_detector = EvasionIntentDetection(hidden_size=text_hidden_size, topk=topk, dropout=dropout)
+        self.evasion_detector = EvasionIntentDetection(hidden_size=self.evidence_hidden_size, topk=topk, dropout=dropout)
         self.retention_adapter = EvidenceRetentionAdapter(
-            text_hidden_size=text_hidden_size,
+            text_hidden_size=self.evidence_hidden_size,
             fused_size=fused_size,
             adapter_hidden=adapter_hidden,
             dropout=dropout,
@@ -388,7 +403,7 @@ class HEARModule(nn.Module):
             attention_mask = torch.ones((bsz, seqlen), device=text_hidden_states.device, dtype=text_hidden_states.dtype)
         attention_mask = attention_mask.to(device=text_hidden_states.device, dtype=text_hidden_states.dtype)
 
-        tagged_hidden = self.source_tagger(text_hidden_states, source_ids=source_ids)
+        tagged_hidden = self.source_tagger(self.hidden_proj(text_hidden_states), source_ids=source_ids)
         z_toxic, toxic_aux = self.toxic_miner(tagged_hidden, attention_mask=attention_mask, segment_ids=segment_ids)
         z_evasion, evasion_aux = self.evasion_detector(tagged_hidden, attention_mask=attention_mask)
         fused_feat_hear, adapter_aux = self.retention_adapter(

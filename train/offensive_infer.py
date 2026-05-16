@@ -137,6 +137,7 @@ def _hear_kwargs_from_checkpoint(ckpt: Dict[str, Any]) -> Dict[str, Any]:
         return {"hear_enable": False}
     return {
         "hear_enable": True,
+        "hear_evidence_hidden_size": int(cfg.get("hear_evidence_hidden_size", 512)),
         "hear_num_sources": int(cfg.get("hear_num_sources", 4)),
         "hear_max_position": int(cfg.get("hear_max_position", 512)),
         "hear_max_segments": int(cfg.get("hear_max_segments", 16)),

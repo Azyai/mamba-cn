@@ -131,6 +131,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
   --batch_size 8 --grad_accum 8 --lr 2e-4 --epochs 8 --max_length 256 \
   --loss focal --focal_gamma 2.0 --focal_alpha_non_toxic 1.3 --focal_alpha_toxic 1.0 \
   --hear_enable \
+  --hear_evidence_hidden_size 512 \
   --hear_topk 5 \
   --hear_span_kernel_sizes 3,5,7 \
   --hear_adapter_hidden 256 \
@@ -149,6 +150,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
 | `--image_drop_prob` | 图像模态随机丢弃概率 | 默认 0.0 表示不丢弃；数值越高表示训练时随机置空图像模态的比例越大，用于缺失模态鲁棒训练 |
 | `--audio_drop_prob` | 音频模态随机丢弃概率 | 默认 0.0 表示不丢弃；数值越高表示训练时随机置空音频模态的比例越大，用于缺失模态鲁棒训练 |
 | `--hear_enable` | 启用 HEAR 层次化反规避证据保持模块 | 默认关闭；开启后接在 MRGF 输出和 MLP 分类头之间 |
+| `--hear_evidence_hidden_size` | HEAR 证据挖掘分支的内部维度 | 默认 512；8B 必须先降维再做 span 卷积，避免显存被 4096 维 Conv1D 和 Adam 状态占满 |
 | `--hear_topk` | HEAR 证据风险池化的 Top-K 数量 | 默认 5，用于 token/span/segment 和 evasion 风险聚合 |
 | `--hear_span_kernel_sizes` | span-level evidence 的 Conv1D 多尺度窗口 | 默认 `3,5,7` |
 | `--hear_adapter_hidden` | Evidence Retention Adapter 的隐藏层维度 | 默认 256；8B 可按显存调整到 512 |
@@ -225,13 +227,14 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --bidirectional_fusion gate \
   --bidirectional_share_mixer \
   --hear_enable \
+  --hear_evidence_hidden_size 256 \
   --hear_topk 5 \
   --hear_span_kernel_sizes 3,5,7 \
-  --hear_adapter_hidden 256 \
+  --hear_adapter_hidden 128 \
   --save_dir runs/lora_8_b_bimamba_mrgf_hear
 ```
 
-如果显存充足，可以把 `--hear_adapter_hidden 256` 调整为 `512`；如果显存紧张，优先保留 `--hear_enable`，再降低 `batch_size` 或增加 `grad_accum`。
+24GB 显卡建议先使用 `--hear_evidence_hidden_size 256 --hear_adapter_hidden 128`。如果显存充足，可以把 `--hear_evidence_hidden_size` 调整为 `512`，或把 `--hear_adapter_hidden` 调整为 `256`；如果显存仍然紧张，优先保留 `--hear_enable`，再降低 `batch_size` 或增加 `grad_accum`。
 
 双向扫描参数说明：
 

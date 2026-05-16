@@ -390,6 +390,7 @@ def main() -> None:
     parser.add_argument("--image_drop_prob", type=float, default=0.0)
     parser.add_argument("--audio_drop_prob", type=float, default=0.0)
     parser.add_argument("--hear_enable", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--hear_evidence_hidden_size", type=int, default=512)
     parser.add_argument("--hear_num_sources", type=int, default=4)
     parser.add_argument("--hear_max_position", type=int, default=512)
     parser.add_argument("--hear_max_segments", type=int, default=16)
@@ -656,6 +657,7 @@ def main() -> None:
         image_dim=args.image_dim,
         audio_dim=args.audio_dim,
         hear_enable=bool(args.hear_enable),
+        hear_evidence_hidden_size=int(args.hear_evidence_hidden_size),
         hear_num_sources=int(args.hear_num_sources),
         hear_max_position=int(args.hear_max_position),
         hear_max_segments=int(args.hear_max_segments),

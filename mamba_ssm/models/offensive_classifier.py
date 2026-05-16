@@ -91,6 +91,7 @@ class MultimodalClassifier(nn.Module):
         image_dim: int = 768,
         audio_dim: int = 768,
         hear_enable: bool = False,
+        hear_evidence_hidden_size: int = 512,
         hear_num_sources: int = 4,
         hear_max_position: int = 512,
         hear_max_segments: int = 16,
@@ -125,6 +126,7 @@ class MultimodalClassifier(nn.Module):
         self.audio_gate = nn.Sequential(nn.Linear(text_dim * 2 + 3, text_dim), nn.Sigmoid()) if audio_backbone else None
         self.hear_config = {
             "hear_enable": bool(hear_enable),
+            "hear_evidence_hidden_size": int(hear_evidence_hidden_size),
             "hear_num_sources": int(hear_num_sources),
             "hear_max_position": int(hear_max_position),
             "hear_max_segments": int(hear_max_segments),
@@ -137,6 +139,7 @@ class MultimodalClassifier(nn.Module):
             HEARModule(
                 text_hidden_size=text_dim,
                 fused_size=text_dim,
+                evidence_hidden_size=hear_evidence_hidden_size,
                 num_sources=hear_num_sources,
                 max_position=hear_max_position,
                 max_segments=hear_max_segments,
