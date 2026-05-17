@@ -29,8 +29,9 @@ class PAERModule(nn.Module):
         span_pooling: str = "topk",
         use_modality_mask: bool = True,
         balance_logits: bool = False,
-        calibration_mode: str = "residual",
-        max_delta: float = 2.0,
+        calibration_mode: str = "hybrid",
+        max_delta: float = 1.0,
+        negative_scale: float = 0.25,
     ) -> None:
         super().__init__()
         if num_labels != 2:
@@ -39,8 +40,8 @@ class PAERModule(nn.Module):
             raise ValueError("toxic_label_id must be 0 or 1.")
         if span_pooling not in {"topk", "noisy_or"}:
             raise ValueError("span_pooling must be 'topk' or 'noisy_or'.")
-        if calibration_mode not in {"residual", "positive"}:
-            raise ValueError("calibration_mode must be 'residual' or 'positive'.")
+        if calibration_mode not in {"hybrid", "residual", "positive"}:
+            raise ValueError("calibration_mode must be 'hybrid', 'residual', or 'positive'.")
         if span_kernel_size < 1:
             raise ValueError("span_kernel_size must be positive.")
         if span_kernel_size % 2 == 0:
@@ -61,6 +62,8 @@ class PAERModule(nn.Module):
         self.balance_logits = bool(balance_logits)
         self.calibration_mode = str(calibration_mode)
         self.max_delta = float(max_delta)
+        self.negative_scale = float(negative_scale)
+        self.risk_norm = max(1.0 + max(self.beta, 0.0), 1e-6)
 
         mid_dim = max(64, self.text_hidden_size // 2)
 
@@ -132,6 +135,7 @@ class PAERModule(nn.Module):
             "balance_logits": self.balance_logits,
             "calibration_mode": self.calibration_mode,
             "max_delta": self.max_delta,
+            "negative_scale": self.negative_scale,
         }
 
     @staticmethod
@@ -199,7 +203,8 @@ class PAERModule(nn.Module):
         gate_input = torch.cat(gate_inputs, dim=-1)
         risk_gate = self.risk_gate(gate_input)
 
-        risk_strength = p_span * (1.0 + self.beta * p_evasion)
+        risk_strength = p_span * (1.0 + self.beta * p_evasion) / self.risk_norm
+        risk_strength = risk_strength.clamp(min=0.0, max=1.0)
         base_probs = F.softmax(base_logits, dim=-1)
         base_toxic_prob = base_probs[:, self.toxic_label_id].unsqueeze(-1)
         base_margin = (
@@ -209,12 +214,25 @@ class PAERModule(nn.Module):
         if self.calibration_mode == "positive":
             risk_direction = torch.ones_like(risk_gate)
             calibration_logits = torch.zeros_like(risk_gate)
-            risk_delta = self.lambda_logit * risk_gate * risk_strength
+            positive_delta = risk_strength
+            negative_delta = torch.zeros_like(risk_strength)
+            risk_delta = self.lambda_logit * self.max_delta * risk_gate * positive_delta
         else:
             calibrator_input = torch.cat([gate_input, base_toxic_prob, base_margin], dim=-1)
             calibration_logits = self.residual_calibrator(calibrator_input)
-            risk_direction = torch.tanh(calibration_logits)
-            risk_delta = self.lambda_logit * self.max_delta * risk_gate * risk_strength * risk_direction
+            raw_direction = torch.tanh(calibration_logits)
+            if self.calibration_mode == "hybrid":
+                positive_delta = F.relu(raw_direction) * risk_strength
+                high_base_toxic = torch.sigmoid((base_toxic_prob - 0.5) * 8.0)
+                weak_evidence = (1.0 - risk_strength).clamp(min=0.0, max=1.0)
+                negative_delta = F.relu(-raw_direction) * weak_evidence * high_base_toxic * self.negative_scale
+                risk_direction = positive_delta - negative_delta
+                risk_delta = self.lambda_logit * self.max_delta * risk_gate * risk_direction
+            else:
+                risk_direction = raw_direction
+                positive_delta = F.relu(raw_direction) * risk_strength
+                negative_delta = F.relu(-raw_direction) * risk_strength
+                risk_delta = self.lambda_logit * self.max_delta * risk_gate * risk_strength * risk_direction
 
         final_logits = base_logits.clone()
         final_logits[:, self.toxic_label_id] = final_logits[:, self.toxic_label_id] + risk_delta.squeeze(-1)
@@ -238,6 +256,8 @@ class PAERModule(nn.Module):
             "risk_gate": risk_gate,
             "risk_strength": risk_strength,
             "risk_direction": risk_direction,
+            "positive_delta": positive_delta,
+            "negative_delta": negative_delta,
             "calibration_logits": calibration_logits,
             "base_toxic_prob": base_toxic_prob,
             "base_margin": base_margin,

@@ -206,7 +206,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
 
 ### PAER 并联式反规避证据保持模块（可选）
 
-PAER（Parallel Anti-Evasion Evidence Retention）是新增的第二个功能模块，默认关闭，不影响原有 `Bi-Mamba2 + MRGF` 实验。启用后，模型会从文本主干输出的 token hidden states 拉出一条并联旁路，进行 toxic span evidence mining、evasion intent detection，并在 `MRGF + MLP` 得到 `base_logits` 后做残差式风险校准。当前默认使用 `residual` 校准模式，初始化时 `risk_delta=0`，因此刚开启 PAER 时模型等价于原始 `base_logits`，训练后再由数据学习是否增强或抑制 toxic logit。
+PAER（Parallel Anti-Evasion Evidence Retention）是新增的第二个功能模块，默认关闭，不影响原有 `Bi-Mamba2 + MRGF` 实验。启用后，模型会从文本主干输出的 token hidden states 拉出一条并联旁路，进行 toxic span evidence mining、evasion intent detection，并在 `MRGF + MLP` 得到 `base_logits` 后做混合式风险校准。当前默认使用 `hybrid` 校准模式，初始化时 `risk_delta=0`，因此刚开启 PAER 时模型等价于原始 `base_logits`；训练后强证据样本优先做温和正向补偿，弱证据且 base 过度偏 toxic 的样本才做小幅负向抑制。
 
 推荐把它作为第二阶段增量消融实验使用：
 
@@ -224,8 +224,10 @@ PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
 --paer_beta 1.0 \
 --paer_lambda_logit 1.0 \
 --paer_span_pooling topk \
---paer_calibration_mode residual \
---paer_max_delta 2.0
+--paer_calibration_mode hybrid \
+--paer_max_delta 1.0 \
+--paer_negative_scale 0.25 \
+--paer_base_loss_weight 0.2
 ```
 
 常用参数说明：
@@ -239,8 +241,11 @@ PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
 | `--paer_lambda_logit` | `1.0` | PAER 对 toxic logit 的整体校准强度 |
 | `--paer_span_pooling` | `topk` | span 风险聚合方式，可选 `topk` 或 `noisy_or` |
 | `--paer_balance_logits` | `False` | 可选项；启用后在增强 toxic logit 的同时轻微降低 non-toxic logit |
-| `--paer_calibration_mode` | `residual` | 校准方式；`residual` 初始不改变 base logits，`positive` 保留旧版只增强 toxic logit 的行为 |
-| `--paer_max_delta` | `2.0` | residual 模式下单次校准的最大幅度上限 |
+| `--paer_calibration_mode` | `hybrid` | 校准方式；`hybrid` 限制负向抑制并保留正向证据补偿，`residual` 为对称残差，`positive` 为只增强 toxic logit |
+| `--paer_max_delta` | `1.0` | PAER 单次校准的最大幅度上限 |
+| `--paer_negative_scale` | `0.25` | hybrid 模式下负向抑制比例，数值越小越保护 toxic 召回 |
+| `--paer_base_loss_weight` | `0.2` | 训练时对 `base_logits` 额外加分类损失，防止 PAER 带偏原分类头 |
+| `--paer_delta_reg_weight` | `0.0` | 可选的 `risk_delta` L2 正则，通常先保持 0 |
 
 完整 8B 组合示例：
 
@@ -263,8 +268,10 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --paer_beta 1.0 \
   --paer_lambda_logit 1.0 \
   --paer_span_pooling topk \
-  --paer_calibration_mode residual \
-  --paer_max_delta 2.0 \
+  --paer_calibration_mode hybrid \
+  --paer_max_delta 1.0 \
+  --paer_negative_scale 0.25 \
+  --paer_base_loss_weight 0.2 \
   --save_dir runs/lora_8_b_bimamba2_mrgf_paer
 ```
 

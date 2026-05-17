@@ -449,8 +449,11 @@ def main() -> None:
     parser.add_argument("--paer_dropout", type=float, default=0.1)
     parser.add_argument("--paer_span_pooling", type=str, default="topk", choices=("topk", "noisy_or"))
     parser.add_argument("--paer_balance_logits", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--paer_calibration_mode", type=str, default="residual", choices=("residual", "positive"))
-    parser.add_argument("--paer_max_delta", type=float, default=2.0)
+    parser.add_argument("--paer_calibration_mode", type=str, default="hybrid", choices=("hybrid", "residual", "positive"))
+    parser.add_argument("--paer_max_delta", type=float, default=1.0)
+    parser.add_argument("--paer_negative_scale", type=float, default=0.25)
+    parser.add_argument("--paer_base_loss_weight", type=float, default=0.2)
+    parser.add_argument("--paer_delta_reg_weight", type=float, default=0.0)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head_nvidia8b")
     args = parser.parse_args()
@@ -658,6 +661,7 @@ def main() -> None:
         paer_balance_logits=bool(args.paer_balance_logits),
         paer_calibration_mode=str(args.paer_calibration_mode),
         paer_max_delta=float(args.paer_max_delta),
+        paer_negative_scale=float(args.paer_negative_scale),
     ).to(device)
     classifier.freeze_backbones_()
     if int(args.bidirectional_layers) > 0:
@@ -1004,7 +1008,7 @@ def main() -> None:
                         audio_mask = audio_mask & (~drop)
 
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(amp_dtype is not None)):
-                    logits = forward_logits(
+                    outputs = classifier(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                         pixel_values=pixel_values,
@@ -1012,6 +1016,7 @@ def main() -> None:
                         input_values=input_values,
                         audio_mask=audio_mask,
                     )
+                    logits = outputs.logits
                     if loss_name == "focal":
                         loss = focal_loss(
                             logits,
@@ -1023,6 +1028,29 @@ def main() -> None:
                         )
                     else:
                         loss = F.cross_entropy(logits, labels, weight=ce_weight)
+                    if (
+                        float(args.paer_base_loss_weight) > 0.0
+                        and outputs.base_logits is not None
+                        and outputs.paer_aux is not None
+                    ):
+                        if loss_name == "focal":
+                            base_loss = focal_loss(
+                                outputs.base_logits,
+                                labels,
+                                class_weight=ce_weight,
+                                alpha_non_toxic=focal_alpha_non_toxic,
+                                alpha_toxic=focal_alpha_toxic,
+                                gamma=focal_gamma,
+                            )
+                        else:
+                            base_loss = F.cross_entropy(outputs.base_logits, labels, weight=ce_weight)
+                        loss = loss + float(args.paer_base_loss_weight) * base_loss
+                    if (
+                        float(args.paer_delta_reg_weight) > 0.0
+                        and outputs.paer_aux is not None
+                        and "risk_delta" in outputs.paer_aux
+                    ):
+                        loss = loss + float(args.paer_delta_reg_weight) * outputs.paer_aux["risk_delta"].pow(2).mean()
                     loss = loss / max(args.grad_accum, 1)
 
                 with torch.no_grad():
