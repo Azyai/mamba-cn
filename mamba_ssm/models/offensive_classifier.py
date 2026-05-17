@@ -99,6 +99,7 @@ class MultimodalClassifier(nn.Module):
         hear_topk: int = 5,
         hear_adapter_hidden: int = 256,
         hear_dropout: float = 0.1,
+        hear_max_residual_scale: float = 0.05,
     ):
         super().__init__()
         self.text_backbone = text_backbone
@@ -134,6 +135,7 @@ class MultimodalClassifier(nn.Module):
             "hear_topk": int(hear_topk),
             "hear_adapter_hidden": int(hear_adapter_hidden),
             "hear_dropout": float(hear_dropout),
+            "hear_max_residual_scale": float(hear_max_residual_scale),
         }
         self.hear_module = (
             HEARModule(
@@ -148,6 +150,7 @@ class MultimodalClassifier(nn.Module):
                 adapter_hidden=hear_adapter_hidden,
                 dropout=hear_dropout,
                 use_modality_mask=True,
+                max_residual_scale=hear_max_residual_scale,
             )
             if hear_enable
             else None

@@ -467,6 +467,8 @@ def main() -> None:
     parser.add_argument("--hear_topk", type=int, default=5)
     parser.add_argument("--hear_adapter_hidden", type=int, default=256)
     parser.add_argument("--hear_dropout", type=float, default=0.1)
+    parser.add_argument("--hear_lr", type=float, default=2e-5)
+    parser.add_argument("--hear_max_residual_scale", type=float, default=0.05)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_full_model", action="store_true")
     parser.add_argument("--save_dir", type=str, default="runs/offensive_head")
@@ -571,6 +573,7 @@ def main() -> None:
         hear_topk=int(args.hear_topk),
         hear_adapter_hidden=int(args.hear_adapter_hidden),
         hear_dropout=float(args.hear_dropout),
+        hear_max_residual_scale=float(args.hear_max_residual_scale),
     ).to(device)
     classifier.freeze_backbones_()
 
@@ -786,12 +789,15 @@ def main() -> None:
     lora_params: List[torch.nn.Parameter] = []
     head_params: List[torch.nn.Parameter] = []
     norm_params: List[torch.nn.Parameter] = []
+    hear_params: List[torch.nn.Parameter] = []
     other_params: List[torch.nn.Parameter] = []
     
     for name, p in classifier.named_parameters():
         if not p.requires_grad:
             continue
-        if name.endswith(".lora_A") or name.endswith(".lora_B"):
+        if name.startswith("hear_module."):
+            hear_params.append(p)
+        elif name.endswith(".lora_A") or name.endswith(".lora_B"):
             lora_params.append(p)
         elif "head." in name or "blank_" in name or "image_proj" in name or "audio_proj" in name or "image_gate" in name or "audio_gate" in name or "image_conf_proj" in name or "audio_conf_proj" in name:
             head_params.append(p)
@@ -807,6 +813,8 @@ def main() -> None:
         param_groups.append({"params": head_params, "lr": float(args.head_lr), "weight_decay": float(args.weight_decay)})
     if norm_params:
         param_groups.append({"params": norm_params, "lr": float(args.head_lr), "weight_decay": 0.0})
+    if hear_params:
+        param_groups.append({"params": hear_params, "lr": float(args.hear_lr), "weight_decay": float(args.weight_decay)})
     if other_params:
         param_groups.append({"params": other_params, "lr": float(args.lr), "weight_decay": float(args.weight_decay)})
 

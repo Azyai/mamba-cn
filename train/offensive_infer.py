@@ -145,6 +145,7 @@ def _hear_kwargs_from_checkpoint(ckpt: Dict[str, Any]) -> Dict[str, Any]:
         "hear_topk": int(cfg.get("hear_topk", 5)),
         "hear_adapter_hidden": int(cfg.get("hear_adapter_hidden", 256)),
         "hear_dropout": float(cfg.get("hear_dropout", 0.0)),
+        "hear_max_residual_scale": float(cfg.get("hear_max_residual_scale", 0.05)),
     }
 
 

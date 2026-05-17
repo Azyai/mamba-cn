@@ -21,6 +21,13 @@ def _masked_softmax(logits: torch.Tensor, mask: torch.Tensor, dim: int = -1) -> 
     return F.softmax(logits, dim=dim)
 
 
+def _init_probability_head(module: nn.Sequential, *, bias: float) -> None:
+    last = module[-1]
+    if isinstance(last, nn.Linear):
+        nn.init.xavier_uniform_(last.weight, gain=0.5)
+        nn.init.constant_(last.bias, float(bias))
+
+
 class SourceAwareSequenceTagging(nn.Module):
     """Inject source and position information into token states."""
 
@@ -81,6 +88,7 @@ class HierarchicalToxicEvidenceMining(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(mid_dim, 1),
         )
+        _init_probability_head(self.token_scorer, bias=-2.0)
         self.span_convs = nn.ModuleList(
             [
                 nn.Conv1d(
@@ -99,6 +107,7 @@ class HierarchicalToxicEvidenceMining(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(mid_dim, 1),
         )
+        _init_probability_head(self.span_scorer, bias=-2.0)
         self.segment_scorer = nn.Sequential(
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, mid_dim),
@@ -106,6 +115,7 @@ class HierarchicalToxicEvidenceMining(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(mid_dim, 1),
         )
+        _init_probability_head(self.segment_scorer, bias=-2.0)
         self.evidence_fusion = nn.Sequential(
             nn.LayerNorm(hidden_size * 3 + 3),
             nn.Linear(hidden_size * 3 + 3, hidden_size),
@@ -113,6 +123,8 @@ class HierarchicalToxicEvidenceMining(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_size, hidden_size),
         )
+        nn.init.zeros_(self.evidence_fusion[-1].weight)
+        nn.init.zeros_(self.evidence_fusion[-1].bias)
 
     def _segment_pool(
         self,
@@ -212,6 +224,7 @@ class EvasionIntentDetection(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(mid_dim, 1),
         )
+        _init_probability_head(self.evasion_scorer, bias=-3.0)
         self.evasion_fusion = nn.Sequential(
             nn.LayerNorm(hidden_size + 2),
             nn.Linear(hidden_size + 2, hidden_size),
@@ -219,6 +232,8 @@ class EvasionIntentDetection(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_size, hidden_size),
         )
+        nn.init.zeros_(self.evasion_fusion[-1].weight)
+        nn.init.zeros_(self.evasion_fusion[-1].bias)
 
     def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         attention_mask = attention_mask.to(device=hidden_states.device, dtype=hidden_states.dtype)
@@ -263,9 +278,13 @@ class EvidenceRetentionAdapter(nn.Module):
         dropout: float = 0.1,
         use_modality_mask: bool = True,
         init_gate_bias: float = -2.0,
+        max_residual_scale: float = 0.05,
+        init_residual_logit: float = -6.0,
     ) -> None:
         super().__init__()
         self.use_modality_mask = bool(use_modality_mask)
+        self.max_residual_scale = float(max_residual_scale)
+        self.residual_logit = nn.Parameter(torch.tensor(float(init_residual_logit)))
         modality_dim = 2 if self.use_modality_mask else 0
         evidence_input_dim = text_hidden_size * 2 + 3 + modality_dim
 
@@ -329,8 +348,23 @@ class EvidenceRetentionAdapter(nn.Module):
         adapter_input = torch.cat([fused_feat, evidence_feat], dim=-1)
         delta = self.adapter(adapter_input)
         gate = torch.sigmoid(self.gate(adapter_input))
-        fused_feat_hear = fused_feat + gate * delta
-        return fused_feat_hear, {"evidence_feat": evidence_feat, "adapter_delta": delta, "adapter_gate": gate}
+        risk_weight = (p_toxic * (0.5 + 0.25 * p_evasion + 0.25 * p_suffix_evasion)).clamp(0.0, 1.0)
+        residual_scale = torch.sigmoid(self.residual_logit).to(dtype=fused_feat.dtype) * self.max_residual_scale
+        bounded_delta = torch.tanh(delta)
+        residual = residual_scale * risk_weight * gate * bounded_delta
+        fused_feat_hear = fused_feat + residual
+        return (
+            fused_feat_hear,
+            {
+                "evidence_feat": evidence_feat,
+                "adapter_delta": delta,
+                "adapter_gate": gate,
+                "bounded_delta": bounded_delta,
+                "risk_weight": risk_weight,
+                "residual_scale": residual_scale.detach(),
+                "residual": residual,
+            },
+        )
 
 
 class HEARModule(nn.Module):
@@ -350,6 +384,8 @@ class HEARModule(nn.Module):
         adapter_hidden: int = 256,
         dropout: float = 0.1,
         use_modality_mask: bool = True,
+        max_residual_scale: float = 0.05,
+        init_residual_logit: float = -6.0,
     ) -> None:
         super().__init__()
         evidence_hidden_size = int(evidence_hidden_size or min(512, text_hidden_size))
@@ -386,6 +422,8 @@ class HEARModule(nn.Module):
             adapter_hidden=adapter_hidden,
             dropout=dropout,
             use_modality_mask=use_modality_mask,
+            max_residual_scale=max_residual_scale,
+            init_residual_logit=init_residual_logit,
         )
 
     def forward(

@@ -135,6 +135,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
   --hear_topk 5 \
   --hear_span_kernel_sizes 3,5,7 \
   --hear_adapter_hidden 256 \
+  --hear_lr 2e-5 \
+  --hear_max_residual_scale 0.05 \
   --save_dir runs/lora_2_8b_multimodal_hear
 ```
 
@@ -154,6 +156,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
 | `--hear_topk` | HEAR 证据风险池化的 Top-K 数量 | 默认 5，用于 token/span/segment 和 evasion 风险聚合 |
 | `--hear_span_kernel_sizes` | span-level evidence 的 Conv1D 多尺度窗口 | 默认 `3,5,7` |
 | `--hear_adapter_hidden` | Evidence Retention Adapter 的隐藏层维度 | 默认 256；8B 可按显存调整到 512 |
+| `--hear_lr` | HEAR 模块单独学习率 | 默认 `2e-5`，建议小于主学习率，避免无辅助监督证据分支扰动已有判别边界 |
+| `--hear_max_residual_scale` | HEAR 对 MRGF 融合特征的最大残差强度 | 默认 `0.05`；分数下降时优先调小到 `0.02` 或 `0.01` |
 | `--hear_max_segments` | segment-level evidence 的最大分段数量 | 默认 16；不传 `segment_ids` 时自动退化为单 segment |
 
 其他参数继承原文本分类任务配置。
@@ -231,10 +235,12 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --hear_topk 5 \
   --hear_span_kernel_sizes 3,5,7 \
   --hear_adapter_hidden 128 \
+  --hear_lr 2e-5 \
+  --hear_max_residual_scale 0.05 \
   --save_dir runs/lora_8_b_bimamba_mrgf_hear
 ```
 
-24GB 显卡建议先使用 `--hear_evidence_hidden_size 256 --hear_adapter_hidden 128`。如果显存充足，可以把 `--hear_evidence_hidden_size` 调整为 `512`，或把 `--hear_adapter_hidden` 调整为 `256`；如果显存仍然紧张，优先保留 `--hear_enable`，再降低 `batch_size` 或增加 `grad_accum`。
+24GB 显卡建议先使用 `--hear_evidence_hidden_size 256 --hear_adapter_hidden 128 --hear_lr 2e-5 --hear_max_residual_scale 0.05`。如果 HEAR 版本整体分数下降，优先把 `--hear_max_residual_scale` 调到 `0.02` 或 `0.01`，再观察规避样本上的收益；如果显存充足，可以把 `--hear_evidence_hidden_size` 调整为 `512`。
 
 双向扫描参数说明：
 

@@ -398,6 +398,8 @@ def main() -> None:
     parser.add_argument("--hear_topk", type=int, default=5)
     parser.add_argument("--hear_adapter_hidden", type=int, default=256)
     parser.add_argument("--hear_dropout", type=float, default=0.1)
+    parser.add_argument("--hear_lr", type=float, default=2e-5)
+    parser.add_argument("--hear_max_residual_scale", type=float, default=0.05)
 
     parser.add_argument("--dataset_dir", type=str, default="dataset/COLDataset")
     parser.add_argument("--train_csv", type=str, default="")
@@ -665,6 +667,7 @@ def main() -> None:
         hear_topk=int(args.hear_topk),
         hear_adapter_hidden=int(args.hear_adapter_hidden),
         hear_dropout=float(args.hear_dropout),
+        hear_max_residual_scale=float(args.hear_max_residual_scale),
     ).to(device)
     classifier.freeze_backbones_()
     if int(args.bidirectional_layers) > 0:
@@ -819,6 +822,7 @@ def main() -> None:
     lora_params: List[torch.nn.Parameter] = []
     head_params: List[torch.nn.Parameter] = []
     norm_params: List[torch.nn.Parameter] = []
+    hear_params: List[torch.nn.Parameter] = []
     other_params: List[torch.nn.Parameter] = []
     for name, p in backbone.named_parameters():
         if not p.requires_grad:
@@ -862,7 +866,7 @@ def main() -> None:
     if getattr(classifier, "hear_module", None) is not None:
         for p in classifier.hear_module.parameters():
             if p.requires_grad:
-                head_params.append(p)
+                hear_params.append(p)
 
     for p in head.parameters():
         if p.requires_grad:
@@ -875,6 +879,8 @@ def main() -> None:
         param_groups.append({"params": head_params, "lr": float(args.head_lr), "weight_decay": float(args.weight_decay)})
     if norm_params:
         param_groups.append({"params": norm_params, "lr": float(args.head_lr), "weight_decay": 0.0})
+    if hear_params:
+        param_groups.append({"params": hear_params, "lr": float(args.hear_lr), "weight_decay": float(args.weight_decay)})
     if other_params:
         param_groups.append({"params": other_params, "lr": float(args.lr), "weight_decay": float(args.weight_decay)})
 
