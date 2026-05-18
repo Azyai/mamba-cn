@@ -246,6 +246,8 @@ PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
 | `--paer_negative_scale` | `0.25` | hybrid 模式下负向抑制比例，数值越小越保护 toxic 召回 |
 | `--paer_base_loss_weight` | `0.2` | 训练时对 `base_logits` 额外加分类损失，防止 PAER 带偏原分类头 |
 | `--paer_delta_reg_weight` | `0.0` | 可选的 `risk_delta` L2 正则，通常先保持 0 |
+| `--eval_threshold_objective` | `ccdc_sum` | 验证集阈值搜索目标；`ccdc_sum` 与项目总分更一致，兼顾 FPR、precision、recall、F1 |
+| `--best_select_metric` | `calibrated_avg_sum` | 保存最佳 checkpoint 的指标；PAER 推荐使用校准后综合分，旧逻辑可设为 `avg_sum` |
 
 完整 8B 组合示例：
 
@@ -272,6 +274,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --paer_max_delta 1.0 \
   --paer_negative_scale 0.25 \
   --paer_base_loss_weight 0.2 \
+  --eval_threshold_objective ccdc_sum \
+  --best_select_metric calibrated_avg_sum \
   --save_dir runs/lora_8_b_bimamba2_mrgf_paer
 ```
 

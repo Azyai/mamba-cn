@@ -321,6 +321,23 @@ def search_best_threshold(
                 score = float(flat["toxic_recall"])
             elif objective == "toxic_f1":
                 score = float(flat["toxic_f1"])
+            elif objective in {"ccdc_sum", "avg_sum"}:
+                binary = compute_binary_metrics_from_counts(tp, tn, fp, fn)
+                score = (
+                    float(binary["acc"])
+                    + float(flat["macro_precision"])
+                    + float(flat["macro_recall"])
+                    + float(flat["macro_f1"])
+                    + float(flat["non_toxic_precision"])
+                    + float(flat["non_toxic_recall"])
+                    + float(flat["non_toxic_f1"])
+                    + float(flat["toxic_precision"])
+                    + float(flat["toxic_recall"])
+                    + float(flat["toxic_f1"])
+                    + (1.0 - float(flat["fpr"]))
+                )
+            elif objective == "macro_f1_fpr":
+                score = float(flat["macro_f1"]) + (1.0 - float(flat["fpr"]))
             else:
                 score = float(flat["macro_f1"])
             if score > float(best["score"]):
@@ -334,6 +351,59 @@ def search_best_threshold(
     out.update({k: float(v) for k, v in flatten_ccdc_metrics(ccdc).items()})
     out["objective"] = objective
     return out
+
+
+def select_epoch_score(epoch_metrics: Dict[str, object], metric: str) -> float:
+    metric = str(metric).strip().lower()
+    eval_metrics = epoch_metrics.get("eval", {})
+    if not isinstance(eval_metrics, dict) or not eval_metrics:
+        return float(epoch_metrics.get("avg_sum", 0.0))
+
+    if metric == "avg_sum":
+        return float(epoch_metrics.get("avg_sum", 0.0))
+    if metric == "macro_f1":
+        return float(epoch_metrics.get("macro_avg_f1", 0.0))
+    if metric == "toxic_f1":
+        return float(epoch_metrics.get("toxic_avg_f1", 0.0))
+
+    def avg_value(raw_key: str, calibrated_key: str | None = None) -> float:
+        values = []
+        for ds_metrics in eval_metrics.values():
+            if not isinstance(ds_metrics, dict):
+                continue
+            if calibrated_key is not None and calibrated_key in ds_metrics:
+                values.append(float(ds_metrics.get(calibrated_key, 0.0)))
+            else:
+                values.append(float(ds_metrics.get(raw_key, 0.0)))
+        return sum(values) / max(len(values), 1)
+
+    if metric == "calibrated_macro_f1":
+        return avg_value("macro_f1", "calibrated_macro_f1")
+    if metric == "calibrated_toxic_f1":
+        return avg_value("toxic_f1", "calibrated_toxic_f1")
+    if metric == "calibrated_avg_sum":
+        cal_acc_values = []
+        for ds_metrics in eval_metrics.values():
+            if not isinstance(ds_metrics, dict):
+                continue
+            cal = ds_metrics.get("calibrated", {})
+            metrics = cal.get("metrics", {}) if isinstance(cal, dict) else {}
+            cal_acc_values.append(float(metrics.get("acc", ds_metrics.get("acc", 0.0))))
+        cal_acc = sum(cal_acc_values) / max(len(cal_acc_values), 1)
+        return (
+            cal_acc
+            + avg_value("macro_precision", "calibrated_macro_precision")
+            + avg_value("macro_recall", "calibrated_macro_recall")
+            + avg_value("macro_f1", "calibrated_macro_f1")
+            + avg_value("non_toxic_precision", "calibrated_non_toxic_precision")
+            + avg_value("non_toxic_recall", "calibrated_non_toxic_recall")
+            + avg_value("non_toxic_f1", "calibrated_non_toxic_f1")
+            + avg_value("toxic_precision", "calibrated_toxic_precision")
+            + avg_value("toxic_recall", "calibrated_toxic_recall")
+            + avg_value("toxic_f1", "calibrated_toxic_f1")
+            + (1.0 - avg_value("fpr", "calibrated_fpr"))
+        )
+    return float(epoch_metrics.get("avg_sum", 0.0))
 
 
 def normalize_path_arg(value: str) -> str:
@@ -440,7 +510,13 @@ def main() -> None:
     parser.add_argument("--eval_threshold_max", type=float, default=0.95)
     parser.add_argument("--eval_threshold_step", type=float, default=0.01)
     parser.add_argument("--eval_threshold_fpr_max", type=float, default=1.0)
-    parser.add_argument("--eval_threshold_objective", type=str, default="macro_f1")
+    parser.add_argument("--eval_threshold_objective", type=str, default="ccdc_sum")
+    parser.add_argument(
+        "--best_select_metric",
+        type=str,
+        default="calibrated_avg_sum",
+        choices=("avg_sum", "macro_f1", "toxic_f1", "calibrated_macro_f1", "calibrated_toxic_f1", "calibrated_avg_sum"),
+    )
     parser.add_argument("--paer_enable", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--paer_span_kernel_size", type=int, default=5)
     parser.add_argument("--paer_topk", type=int, default=3)
@@ -1292,12 +1368,13 @@ def main() -> None:
                 json.dumps(compact_epoch_metrics_for_save(epoch_metrics), ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            score = float(avg_sum)
+            best_select_metric = str(args.best_select_metric)
+            score = float(select_epoch_score(epoch_metrics, best_select_metric))
 
             if float(score) > best_avg_sum:
                 best_avg_sum = float(score)
                 best_metrics = dict(epoch_metrics)
-                best_metrics["best_metric"] = "avg_sum"
+                best_metrics["best_metric"] = best_select_metric
                 best_metrics["best_score"] = float(score)
                 best_head_state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
                 best_classifier_state = classifier.trainable_state_dict()
@@ -1310,6 +1387,7 @@ def main() -> None:
                     "vit_name_or_path": args.vit_name_or_path,
                     "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
                     "paer_config": classifier.paer_config_dict(),
+                    "best_select_metric": best_select_metric,
                 }
                 if lora_cfg is not None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
@@ -1341,7 +1419,11 @@ def main() -> None:
                     )
 
             parts = [f"{k}:{float(eval_metrics[k]['f1']):.4f}" for k in eval_metrics]
-            print(f"[eval] epoch {epoch}/{args.epochs} avg_sum {avg_sum:.4f} " + " ".join(parts))
+            print(
+                f"[eval] epoch {epoch}/{args.epochs} avg_sum {avg_sum:.4f} "
+                f"{str(args.best_select_metric)} {score:.4f} "
+                + " ".join(parts)
+            )
     finally:
         csv_f.close()
 
@@ -1359,6 +1441,7 @@ def main() -> None:
             "vit_name_or_path": args.vit_name_or_path,
             "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
             "paer_config": classifier.paer_config_dict(),
+            "best_select_metric": str(args.best_select_metric),
         }
         if best_classifier_state is not None:
             full_ckpt["classifier_state"] = best_classifier_state
@@ -1374,7 +1457,7 @@ def main() -> None:
     (save_dir / "benchmark_summary.json").write_text(
         json.dumps({"datasets": datasets_arg, "best": compact_epoch_metrics_for_save(best_metrics)}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(f"done. best_avg_sum={best_avg_sum:.4f}. saved at: {save_dir}")
+    print(f"done. best_{str(args.best_select_metric)}={best_avg_sum:.4f}. saved at: {save_dir}")
 
 
 if __name__ == "__main__":
