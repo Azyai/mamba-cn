@@ -1134,10 +1134,12 @@ def main() -> None:
                         p_evasion = evasion_aux.get("p_evasion", None)
                         if p_evasion is not None:
                             target = evasion_labels.float().view(-1, 1)
-                            loss_evasion = F.binary_cross_entropy(
-                                p_evasion.float().clamp(1e-6, 1.0 - 1e-6),
-                                target,
-                            )
+                            # BCE is unsafe under autocast; compute in full precision.
+                            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=False):
+                                loss_evasion = F.binary_cross_entropy(
+                                    p_evasion.float().clamp(1e-6, 1.0 - 1e-6),
+                                    target,
+                                )
                             loss = loss + float(args.hear_evasion_loss_weight) * loss_evasion
                     loss = loss / max(args.grad_accum, 1)
 
