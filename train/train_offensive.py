@@ -272,6 +272,7 @@ def search_best_threshold(
     thr_step: float,
     fpr_max: float,
     objective: str,
+    fpr_weight: float = 1.0,
 ) -> Dict[str, object]:
     probs = probs.to(torch.float32).view(-1)
     gold = gold.to(torch.int64).view(-1)
@@ -293,9 +294,10 @@ def search_best_threshold(
                 score = float(flat["toxic_recall"])
             elif objective == "toxic_f1":
                 score = float(flat["toxic_f1"])
-            elif objective in {"ccdc_sum", "avg_sum"}:
+            elif objective in {"ccdc_sum", "avg_sum", "weighted_ccdc_sum", "ccdc_sum_fpr"}:
                 binary = compute_binary_metrics_from_counts(tp, tn, fp, fn)
-                score = (
+                fpr_term_weight = float(fpr_weight) if objective in {"weighted_ccdc_sum", "ccdc_sum_fpr"} else 1.0
+                core_score = (
                     float(binary["acc"])
                     + float(flat["macro_precision"])
                     + float(flat["macro_recall"])
@@ -306,10 +308,14 @@ def search_best_threshold(
                     + float(flat["toxic_precision"])
                     + float(flat["toxic_recall"])
                     + float(flat["toxic_f1"])
-                    + (1.0 - float(flat["fpr"]))
                 )
+                score = core_score + fpr_term_weight * (1.0 - float(flat["fpr"]))
+                if objective in {"weighted_ccdc_sum", "ccdc_sum_fpr"}:
+                    score = score * (11.0 / (10.0 + max(fpr_term_weight, 1e-6)))
             elif objective == "macro_f1_fpr":
-                score = float(flat["macro_f1"]) + (1.0 - float(flat["fpr"]))
+                fpr_term_weight = float(fpr_weight)
+                score = float(flat["macro_f1"]) + fpr_term_weight * (1.0 - float(flat["fpr"]))
+                score = score * (2.0 / (1.0 + max(fpr_term_weight, 1e-6)))
             else:
                 score = float(flat["macro_f1"])
             if score > float(best["score"]):
@@ -322,10 +328,11 @@ def search_best_threshold(
     out: Dict[str, object] = {"threshold": float(best["threshold"]), "score": float(best["score"]), "metrics": m, "ccdc": ccdc}
     out.update({k: float(v) for k, v in flatten_ccdc_metrics(ccdc).items()})
     out["objective"] = objective
+    out["fpr_weight"] = float(fpr_weight)
     return out
 
 
-def select_epoch_score(epoch_metrics: Dict[str, object], metric: str) -> float:
+def select_epoch_score(epoch_metrics: Dict[str, object], metric: str, *, fpr_weight: float = 1.0) -> float:
     metric = str(metric).strip().lower()
     eval_metrics = epoch_metrics.get("eval", {})
     if not isinstance(eval_metrics, dict) or not eval_metrics:
@@ -353,7 +360,8 @@ def select_epoch_score(epoch_metrics: Dict[str, object], metric: str) -> float:
         return avg_value("macro_f1", "calibrated_macro_f1")
     if metric == "calibrated_toxic_f1":
         return avg_value("toxic_f1", "calibrated_toxic_f1")
-    if metric == "calibrated_avg_sum":
+    if metric in {"calibrated_avg_sum", "calibrated_weighted_avg_sum"}:
+        fpr_term_weight = float(fpr_weight) if metric == "calibrated_weighted_avg_sum" else 1.0
         cal_acc_values = []
         for ds_metrics in eval_metrics.values():
             if not isinstance(ds_metrics, dict):
@@ -362,7 +370,7 @@ def select_epoch_score(epoch_metrics: Dict[str, object], metric: str) -> float:
             metrics = cal.get("metrics", {}) if isinstance(cal, dict) else {}
             cal_acc_values.append(float(metrics.get("acc", ds_metrics.get("acc", 0.0))))
         cal_acc = sum(cal_acc_values) / max(len(cal_acc_values), 1)
-        return (
+        core_score = (
             cal_acc
             + avg_value("macro_precision", "calibrated_macro_precision")
             + avg_value("macro_recall", "calibrated_macro_recall")
@@ -373,8 +381,11 @@ def select_epoch_score(epoch_metrics: Dict[str, object], metric: str) -> float:
             + avg_value("toxic_precision", "calibrated_toxic_precision")
             + avg_value("toxic_recall", "calibrated_toxic_recall")
             + avg_value("toxic_f1", "calibrated_toxic_f1")
-            + (1.0 - avg_value("fpr", "calibrated_fpr"))
         )
+        score = core_score + fpr_term_weight * (1.0 - avg_value("fpr", "calibrated_fpr"))
+        if metric == "calibrated_weighted_avg_sum":
+            score = score * (11.0 / (10.0 + max(fpr_term_weight, 1e-6)))
+        return score
     return float(epoch_metrics.get("avg_sum", 0.0))
 
 
@@ -511,12 +522,21 @@ def main() -> None:
     parser.add_argument("--eval_threshold_max", type=float, default=0.95)
     parser.add_argument("--eval_threshold_step", type=float, default=0.01)
     parser.add_argument("--eval_threshold_fpr_max", type=float, default=1.0)
-    parser.add_argument("--eval_threshold_objective", type=str, default="ccdc_sum")
+    parser.add_argument("--eval_threshold_objective", type=str, default="weighted_ccdc_sum")
+    parser.add_argument("--eval_threshold_fpr_weight", type=float, default=2.0)
     parser.add_argument(
         "--best_select_metric",
         type=str,
-        default="calibrated_avg_sum",
-        choices=("avg_sum", "macro_f1", "toxic_f1", "calibrated_macro_f1", "calibrated_toxic_f1", "calibrated_avg_sum"),
+        default="calibrated_weighted_avg_sum",
+        choices=(
+            "avg_sum",
+            "macro_f1",
+            "toxic_f1",
+            "calibrated_macro_f1",
+            "calibrated_toxic_f1",
+            "calibrated_avg_sum",
+            "calibrated_weighted_avg_sum",
+        ),
     )
     parser.add_argument("--vit_name_or_path", type=str, default="")
     parser.add_argument("--wav2vec2_name_or_path", type=str, default="")
@@ -534,9 +554,10 @@ def main() -> None:
     parser.add_argument("--paer_span_pooling", type=str, default="topk", choices=("topk", "noisy_or"))
     parser.add_argument("--paer_balance_logits", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--paer_calibration_mode", type=str, default="hybrid", choices=("hybrid", "residual", "positive"))
-    parser.add_argument("--paer_max_delta", type=float, default=1.0)
-    parser.add_argument("--paer_negative_scale", type=float, default=0.25)
-    parser.add_argument("--paer_base_loss_weight", type=float, default=0.2)
+    parser.add_argument("--paer_max_delta", type=float, default=0.7)
+    parser.add_argument("--paer_negative_scale", type=float, default=0.1)
+    parser.add_argument("--paer_evasion_floor", type=float, default=0.35)
+    parser.add_argument("--paer_base_loss_weight", type=float, default=0.3)
     parser.add_argument("--paer_delta_reg_weight", type=float, default=0.0)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_full_model", action="store_true")
@@ -644,6 +665,7 @@ def main() -> None:
         paer_calibration_mode=str(args.paer_calibration_mode),
         paer_max_delta=float(args.paer_max_delta),
         paer_negative_scale=float(args.paer_negative_scale),
+        paer_evasion_floor=float(args.paer_evasion_floor),
     ).to(device)
     classifier.freeze_backbones_()
 
@@ -1260,11 +1282,13 @@ def main() -> None:
                             thr_step=float(args.eval_threshold_step),
                             fpr_max=float(args.eval_threshold_fpr_max),
                             objective=str(args.eval_threshold_objective),
+                            fpr_weight=float(args.eval_threshold_fpr_weight),
                         )
                         m_out["calibrated"] = {
                             "threshold": cal["threshold"],
                             "score": cal["score"],
                             "objective": cal.get("objective", str(args.eval_threshold_objective)),
+                            "fpr_weight": float(cal.get("fpr_weight", args.eval_threshold_fpr_weight)),
                             "fpr_max": float(args.eval_threshold_fpr_max),
                             "metrics": cal["metrics"],
                             "ccdc": cal["ccdc"],
@@ -1335,7 +1359,13 @@ def main() -> None:
             )
 
             best_select_metric = str(args.best_select_metric)
-            score = float(select_epoch_score(epoch_metrics, best_select_metric))
+            score = float(
+                select_epoch_score(
+                    epoch_metrics,
+                    best_select_metric,
+                    fpr_weight=float(args.eval_threshold_fpr_weight),
+                )
+            )
 
             if float(score) > best_avg_sum:
                 best_avg_sum = float(score)
@@ -1354,6 +1384,8 @@ def main() -> None:
                     "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
                     "paer_config": classifier.paer_config_dict(),
                     "best_select_metric": best_select_metric,
+                    "eval_threshold_objective": str(args.eval_threshold_objective),
+                    "eval_threshold_fpr_weight": float(args.eval_threshold_fpr_weight),
                 }
                 if lora_cfg is not None:
                     ckpt["lora"] = {k: v.detach().cpu() for k, v in lora_state_dict(backbone).items()}
@@ -1391,6 +1423,8 @@ def main() -> None:
             "wav2vec2_name_or_path": args.wav2vec2_name_or_path,
             "paer_config": classifier.paer_config_dict(),
             "best_select_metric": str(args.best_select_metric),
+            "eval_threshold_objective": str(args.eval_threshold_objective),
+            "eval_threshold_fpr_weight": float(args.eval_threshold_fpr_weight),
         }
         if best_classifier_state is not None:
             full_ckpt["classifier_state"] = best_classifier_state

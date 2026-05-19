@@ -225,9 +225,13 @@ PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
 --paer_lambda_logit 1.0 \
 --paer_span_pooling topk \
 --paer_calibration_mode hybrid \
---paer_max_delta 1.0 \
---paer_negative_scale 0.25 \
---paer_base_loss_weight 0.2
+--paer_max_delta 0.7 \
+--paer_negative_scale 0.1 \
+--paer_evasion_floor 0.35 \
+--paer_base_loss_weight 0.3 \
+--eval_threshold_objective weighted_ccdc_sum \
+--eval_threshold_fpr_weight 2.0 \
+--best_select_metric calibrated_weighted_avg_sum
 ```
 
 常用参数说明：
@@ -242,12 +246,14 @@ PAER 同时兼容 2.8B 与 8B 训练脚本。启用示例：
 | `--paer_span_pooling` | `topk` | span 风险聚合方式，可选 `topk` 或 `noisy_or` |
 | `--paer_balance_logits` | `False` | 可选项；启用后在增强 toxic logit 的同时轻微降低 non-toxic logit |
 | `--paer_calibration_mode` | `hybrid` | 校准方式；`hybrid` 限制负向抑制并保留正向证据补偿，`residual` 为对称残差，`positive` 为只增强 toxic logit |
-| `--paer_max_delta` | `1.0` | PAER 单次校准的最大幅度上限 |
-| `--paer_negative_scale` | `0.25` | hybrid 模式下负向抑制比例，数值越小越保护 toxic 召回 |
-| `--paer_base_loss_weight` | `0.2` | 训练时对 `base_logits` 额外加分类损失，防止 PAER 带偏原分类头 |
+| `--paer_max_delta` | `0.7` | PAER 单次校准的最大幅度上限 |
+| `--paer_negative_scale` | `0.1` | hybrid 模式下负向抑制比例，数值越小越保护 toxic 召回 |
+| `--paer_evasion_floor` | `0.35` | span-only 风险保留比例；数值越小越强调 toxic span 与 evasion 同时出现 |
+| `--paer_base_loss_weight` | `0.3` | 训练时对 `base_logits` 额外加分类损失，防止 PAER 带偏原分类头 |
 | `--paer_delta_reg_weight` | `0.0` | 可选的 `risk_delta` L2 正则，通常先保持 0 |
-| `--eval_threshold_objective` | `ccdc_sum` | 验证集阈值搜索目标；`ccdc_sum` 与项目总分更一致，兼顾 FPR、precision、recall、F1 |
-| `--best_select_metric` | `calibrated_avg_sum` | 保存最佳 checkpoint 的指标；PAER 推荐使用校准后综合分，旧逻辑可设为 `avg_sum` |
+| `--eval_threshold_objective` | `weighted_ccdc_sum` | 验证集阈值搜索目标；比 `ccdc_sum` 更重视 FPR，适合 PAER 后误报偏高的情况 |
+| `--eval_threshold_fpr_weight` | `2.0` | FPR 惩罚权重，ToxiCN 误报偏高时可调到 `2.5` 或 `3.0` |
+| `--best_select_metric` | `calibrated_weighted_avg_sum` | 保存最佳 checkpoint 的指标；PAER 推荐使用 FPR 加权后的校准综合分 |
 
 完整 8B 组合示例：
 
@@ -271,11 +277,13 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --paer_lambda_logit 1.0 \
   --paer_span_pooling topk \
   --paer_calibration_mode hybrid \
-  --paer_max_delta 1.0 \
-  --paer_negative_scale 0.25 \
-  --paer_base_loss_weight 0.2 \
-  --eval_threshold_objective ccdc_sum \
-  --best_select_metric calibrated_avg_sum \
+  --paer_max_delta 0.7 \
+  --paer_negative_scale 0.1 \
+  --paer_evasion_floor 0.35 \
+  --paer_base_loss_weight 0.3 \
+  --eval_threshold_objective weighted_ccdc_sum \
+  --eval_threshold_fpr_weight 2.0 \
+  --best_select_metric calibrated_weighted_avg_sum \
   --save_dir runs/lora_8_b_bimamba2_mrgf_paer
 ```
 

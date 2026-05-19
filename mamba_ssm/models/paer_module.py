@@ -30,8 +30,9 @@ class PAERModule(nn.Module):
         use_modality_mask: bool = True,
         balance_logits: bool = False,
         calibration_mode: str = "hybrid",
-        max_delta: float = 1.0,
-        negative_scale: float = 0.25,
+        max_delta: float = 0.7,
+        negative_scale: float = 0.1,
+        evasion_floor: float = 0.35,
     ) -> None:
         super().__init__()
         if num_labels != 2:
@@ -46,6 +47,8 @@ class PAERModule(nn.Module):
             raise ValueError("span_kernel_size must be positive.")
         if span_kernel_size % 2 == 0:
             raise ValueError("span_kernel_size must be odd to keep sequence length unchanged.")
+        if not 0.0 <= float(evasion_floor) <= 1.0:
+            raise ValueError("evasion_floor must be in [0, 1].")
 
         self.text_hidden_size = int(text_hidden_size)
         self.fused_size = int(fused_size)
@@ -63,6 +66,7 @@ class PAERModule(nn.Module):
         self.calibration_mode = str(calibration_mode)
         self.max_delta = float(max_delta)
         self.negative_scale = float(negative_scale)
+        self.evasion_floor = float(evasion_floor)
         self.risk_norm = max(1.0 + max(self.beta, 0.0), 1e-6)
 
         mid_dim = max(64, self.text_hidden_size // 2)
@@ -136,6 +140,7 @@ class PAERModule(nn.Module):
             "calibration_mode": self.calibration_mode,
             "max_delta": self.max_delta,
             "negative_scale": self.negative_scale,
+            "evasion_floor": self.evasion_floor,
         }
 
     @staticmethod
@@ -203,7 +208,11 @@ class PAERModule(nn.Module):
         gate_input = torch.cat(gate_inputs, dim=-1)
         risk_gate = self.risk_gate(gate_input)
 
-        risk_strength = p_span * (1.0 + self.beta * p_evasion) / self.risk_norm
+        evasion_factor = torch.maximum(
+            (self.beta * p_evasion).clamp(min=0.0, max=1.0),
+            p_evasion.new_full(p_evasion.shape, self.evasion_floor),
+        )
+        risk_strength = p_span * evasion_factor
         risk_strength = risk_strength.clamp(min=0.0, max=1.0)
         base_probs = F.softmax(base_logits, dim=-1)
         base_toxic_prob = base_probs[:, self.toxic_label_id].unsqueeze(-1)
@@ -254,6 +263,7 @@ class PAERModule(nn.Module):
             "evasion_probs": evasion_probs,
             "p_evasion": p_evasion,
             "risk_gate": risk_gate,
+            "evasion_factor": evasion_factor,
             "risk_strength": risk_strength,
             "risk_direction": risk_direction,
             "positive_delta": positive_delta,

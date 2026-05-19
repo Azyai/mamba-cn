@@ -86,6 +86,7 @@ def _paer_kwargs_from_checkpoint(ckpt: Dict[str, Any]) -> Dict[str, Any]:
         "paer_calibration_mode": str(cfg.get("calibration_mode", "hybrid")),
         "paer_max_delta": float(cfg.get("max_delta", 1.0)),
         "paer_negative_scale": float(cfg.get("negative_scale", 0.25)),
+        "paer_evasion_floor": float(cfg.get("evasion_floor", 0.35)),
     }
 
 

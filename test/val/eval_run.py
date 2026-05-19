@@ -107,20 +107,41 @@ def compute_counts(pred: List[int], gold: List[int]) -> Tuple[int, int, int, int
     return tp, tn, fp, fn
 
 
-def _objective_score(flat: Dict[str, float], objective: str) -> float:
+def _objective_score(flat: Dict[str, float], objective: str, *, fpr_weight: float = 1.0) -> float:
     o = str(objective).strip().lower()
+    tp = flat.get("_tp", 0.0)
+    tn = flat.get("_tn", 0.0)
+    fp = flat.get("_fp", 0.0)
+    fn = flat.get("_fn", 0.0)
     if o == "acc":
-        tp = flat.get("_tp", 0.0)
-        tn = flat.get("_tn", 0.0)
-        fp = flat.get("_fp", 0.0)
-        fn = flat.get("_fn", 0.0)
         return float(tp + tn) / max(float(tp + tn + fp + fn), 1.0)
     if o == "toxic_recall":
-        tp = flat.get("_tp", 0.0)
-        fn = flat.get("_fn", 0.0)
         return float(tp) / max(float(tp + fn), 1.0)
     if o == "toxic_f1":
         return float(flat.get("toxic_f1", 0.0))
+    if o in {"ccdc_sum", "avg_sum", "weighted_ccdc_sum", "ccdc_sum_fpr"}:
+        fpr_term_weight = float(fpr_weight) if o in {"weighted_ccdc_sum", "ccdc_sum_fpr"} else 1.0
+        acc = float(tp + tn) / max(float(tp + tn + fp + fn), 1.0)
+        core_score = (
+            acc
+            + float(flat.get("macro_precision", 0.0))
+            + float(flat.get("macro_recall", 0.0))
+            + float(flat.get("macro_f1", 0.0))
+            + float(flat.get("non_toxic_precision", 0.0))
+            + float(flat.get("non_toxic_recall", 0.0))
+            + float(flat.get("non_toxic_f1", 0.0))
+            + float(flat.get("toxic_precision", 0.0))
+            + float(flat.get("toxic_recall", 0.0))
+            + float(flat.get("toxic_f1", 0.0))
+        )
+        score = core_score + fpr_term_weight * (1.0 - float(flat.get("fpr", 0.0)))
+        if o in {"weighted_ccdc_sum", "ccdc_sum_fpr"}:
+            score = score * (11.0 / (10.0 + max(fpr_term_weight, 1e-6)))
+        return score
+    if o == "macro_f1_fpr":
+        fpr_term_weight = float(fpr_weight)
+        score = float(flat.get("macro_f1", 0.0)) + fpr_term_weight * (1.0 - float(flat.get("fpr", 0.0)))
+        return score * (2.0 / (1.0 + max(fpr_term_weight, 1e-6)))
     return float(flat.get("macro_f1", 0.0))
 
 
@@ -133,6 +154,7 @@ def search_best_threshold(
     thr_step: float,
     fpr_max: float,
     objective: str,
+    fpr_weight: float = 1.0,
 ) -> Dict[str, Any]:
     best = {"score": -1e9, "threshold": 0.5, "tp": 0, "tn": 0, "fp": 0, "fn": 0}
     t = float(thr_min)
@@ -146,7 +168,7 @@ def search_best_threshold(
         flat["_fp"] = float(fp)
         flat["_fn"] = float(fn)
         if float(flat["fpr"]) <= float(fpr_max) + 1e-12:
-            score = _objective_score(flat, objective)
+            score = _objective_score(flat, objective, fpr_weight=float(fpr_weight))
             if float(score) > float(best["score"]):
                 best = {"score": float(score), "threshold": float(t), "tp": tp, "tn": tn, "fp": fp, "fn": fn}
         t += float(thr_step)
@@ -155,6 +177,7 @@ def search_best_threshold(
     out: Dict[str, Any] = {"threshold": float(best["threshold"]), "score": float(best["score"]), "ccdc": ccdc}
     out.update(flatten_ccdc_metrics(ccdc))
     out["objective"] = str(objective)
+    out["fpr_weight"] = float(fpr_weight)
     return out
 
 
@@ -197,7 +220,8 @@ def main() -> None:
     ap.add_argument("--thr_max", type=float, default=0.95)
     ap.add_argument("--thr_step", type=float, default=0.01)
     ap.add_argument("--thr_fpr_max", type=float, default=1.0)
-    ap.add_argument("--thr_objective", type=str, default="macro_f1")
+    ap.add_argument("--thr_objective", type=str, default="weighted_ccdc_sum")
+    ap.add_argument("--thr_fpr_weight", type=float, default=2.0)
     ap.add_argument("--dataset_for_threshold", type=str, default="toxicn")
     ap.add_argument("--toxicn_train_json", type=str, default="dataset/ToxiCN/train.json")
     ap.add_argument("--toxicn_test_json", type=str, default="dataset/ToxiCN/test.json")
@@ -235,6 +259,7 @@ def main() -> None:
                 thr_step=float(args.thr_step),
                 fpr_max=float(args.thr_fpr_max),
                 objective=str(args.thr_objective),
+                fpr_weight=float(args.thr_fpr_weight),
             )
             thr = float(cal["threshold"])
         elif mode in {"calibrated", "cal"} and predictor.calibrated_threshold is not None:

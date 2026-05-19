@@ -101,8 +101,9 @@ class MultimodalClassifier(nn.Module):
         paer_balance_logits: bool = False,
         paer_toxic_label_id: int = 1,
         paer_calibration_mode: str = "hybrid",
-        paer_max_delta: float = 1.0,
-        paer_negative_scale: float = 0.25,
+        paer_max_delta: float = 0.7,
+        paer_negative_scale: float = 0.1,
+        paer_evasion_floor: float = 0.35,
     ):
         super().__init__()
         self.text_backbone = text_backbone
@@ -145,6 +146,7 @@ class MultimodalClassifier(nn.Module):
                 calibration_mode=paer_calibration_mode,
                 max_delta=paer_max_delta,
                 negative_scale=paer_negative_scale,
+                evasion_floor=paer_evasion_floor,
             )
             if paer_enable
             else None
