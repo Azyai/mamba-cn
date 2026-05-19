@@ -138,6 +138,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
   --hear_lr 2e-5 \
   --hear_max_residual_scale 0.05 \
   --evasion_aug_prob 0.2 \
+  --evasion_aug_loss_weight 0.2 \
+  --evasion_consistency_weight 0.1 \
   --hear_evasion_loss_weight 0.05 \
   --save_dir runs/lora_2_8b_multimodal_hear
 ```
@@ -162,6 +164,8 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive.py \
 | `--hear_max_residual_scale` | HEAR 对 MRGF 融合特征的最大残差强度 | 默认 `0.05`；分数下降时优先调小到 `0.02` 或 `0.01` |
 | `--hear_max_segments` | segment-level evidence 的最大分段数量 | 默认 16；不传 `segment_ids` 时自动退化为单 segment |
 | `--evasion_aug_prob` | 对 toxic 训练样本随机追加规避/免责声明后缀的概率 | 默认 0.0；建议 HEAR 实验使用 0.2 到 0.3 |
+| `--evasion_aug_loss_weight` | 规避增强样本的辅助分类损失权重 | 默认 0.2；增强样本不替换原始 clean 样本，只作为额外辅助分支 |
+| `--evasion_consistency_weight` | 原样本与规避增强样本输出一致性损失权重 | 默认 0.1，用于降低增强训练对 clean dev 的副作用 |
 | `--hear_evasion_loss_weight` | HEAR evasion intent 检测的辅助监督损失权重 | 默认 0.0；配合 `--evasion_aug_prob` 使用，建议 0.03 到 0.08 |
 
 其他参数继承原文本分类任务配置。
@@ -242,11 +246,13 @@ CUDA_VISIBLE_DEVICES=0 python train/train_offensive_nvidia8b.py \
   --hear_lr 2e-5 \
   --hear_max_residual_scale 0.05 \
   --evasion_aug_prob 0.25 \
+  --evasion_aug_loss_weight 0.2 \
+  --evasion_consistency_weight 0.1 \
   --hear_evasion_loss_weight 0.05 \
   --save_dir runs/lora_8_b_bimamba_mrgf_hear
 ```
 
-24GB 显卡建议先使用 `--hear_evidence_hidden_size 256 --hear_adapter_hidden 128 --hear_lr 2e-5 --hear_max_residual_scale 0.05`。如果 HEAR 版本整体分数下降，优先把 `--hear_max_residual_scale` 调到 `0.02` 或 `0.01`；如果 clean dev 提升很小但 FPR 已下降，可以加入 `--evasion_aug_prob 0.25 --hear_evasion_loss_weight 0.05`，重点观察规避后缀测试集上的提升。
+24GB 显卡建议先使用 `--hear_evidence_hidden_size 256 --hear_adapter_hidden 128 --hear_lr 2e-5 --hear_max_residual_scale 0.05`。如果 clean dev 分数下降，优先把 `--evasion_aug_prob` 降到 `0.1` 或把 `--evasion_aug_loss_weight` 降到 `0.1`；如果 clean dev 稳定但规避样本收益不足，再把 `--hear_max_residual_scale` 调到 `0.07`。
 
 双向扫描参数说明：
 

@@ -501,6 +501,8 @@ def main() -> None:
     parser.add_argument("--hear_max_residual_scale", type=float, default=0.05)
     parser.add_argument("--evasion_aug_prob", type=float, default=0.0)
     parser.add_argument("--evasion_aug_suffixes", type=str, default="")
+    parser.add_argument("--evasion_aug_loss_weight", type=float, default=0.2)
+    parser.add_argument("--evasion_consistency_weight", type=float, default=0.1)
     parser.add_argument("--hear_evasion_loss_weight", type=float, default=0.0)
     parser.add_argument("--train_norm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_full_model", action="store_true")
@@ -757,13 +759,16 @@ def main() -> None:
     def collate(batch: List[Dict[str, object]], *, is_train: bool = False) -> Dict[str, torch.Tensor]:
         texts: List[str] = []
         label_values: List[int] = []
-        evasion_values: List[int] = []
+        aug_texts: List[str] = []
+        aug_labels: List[int] = []
+        aug_indices: List[int] = []
         for x in batch:
             label = int(x["label"])
             text = str(x["text"])
+            aug_text = text
             evasion_label = 0
             if is_train:
-                text, evasion_label = maybe_apply_evasion_aug(
+                aug_text, evasion_label = maybe_apply_evasion_aug(
                     text,
                     label,
                     prob=float(args.evasion_aug_prob),
@@ -772,7 +777,10 @@ def main() -> None:
                 )
             texts.append(text)
             label_values.append(label)
-            evasion_values.append(evasion_label)
+            if evasion_label:
+                aug_indices.append(len(texts) - 1)
+                aug_texts.append(aug_text)
+                aug_labels.append(label)
         labels = torch.tensor(label_values, dtype=torch.long)
         enc = tokenizer(
             texts,
@@ -782,7 +790,19 @@ def main() -> None:
             return_tensors="pt",
         )
         enc["labels"] = labels
-        enc["evasion_labels"] = torch.tensor(evasion_values, dtype=torch.float32)
+        if aug_texts:
+            aug_enc = tokenizer(
+                aug_texts,
+                truncation=True,
+                max_length=args.max_length,
+                padding=True,
+                return_tensors="pt",
+            )
+            enc["aug_input_ids"] = aug_enc["input_ids"]
+            if "attention_mask" in aug_enc:
+                enc["aug_attention_mask"] = aug_enc["attention_mask"]
+            enc["aug_labels"] = torch.tensor(aug_labels, dtype=torch.long)
+            enc["aug_indices"] = torch.tensor(aug_indices, dtype=torch.long)
         
         # Process images
         if image_processor is not None:
@@ -1031,9 +1051,18 @@ def main() -> None:
                 if attention_mask is not None:
                     attention_mask = attention_mask.to(device)
                 labels = batch["labels"].to(device)
-                evasion_labels = batch.get("evasion_labels", None)
-                if evasion_labels is not None:
-                    evasion_labels = evasion_labels.to(device)
+                aug_input_ids = batch.get("aug_input_ids", None)
+                aug_attention_mask = batch.get("aug_attention_mask", None)
+                aug_labels = batch.get("aug_labels", None)
+                aug_indices = batch.get("aug_indices", None)
+                if aug_input_ids is not None:
+                    aug_input_ids = aug_input_ids.to(device)
+                if aug_attention_mask is not None:
+                    aug_attention_mask = aug_attention_mask.to(device)
+                if aug_labels is not None:
+                    aug_labels = aug_labels.to(device)
+                if aug_indices is not None:
+                    aug_indices = aug_indices.to(device)
 
                 pixel_values = batch.get("pixel_values", None)
                 if pixel_values is not None:
@@ -1077,19 +1106,60 @@ def main() -> None:
                     else:
                         loss = F.cross_entropy(logits, labels, weight=ce_weight)
                     if (
-                        float(args.hear_evasion_loss_weight) > 0.0
-                        and evasion_labels is not None
-                        and getattr(outputs, "hear_aux", None) is not None
+                        aug_input_ids is not None
+                        and aug_labels is not None
+                        and aug_indices is not None
+                        and aug_indices.numel() > 0
+                        and (
+                            float(args.evasion_aug_loss_weight) > 0.0
+                            or float(args.evasion_consistency_weight) > 0.0
+                            or float(args.hear_evasion_loss_weight) > 0.0
+                        )
                     ):
-                        evasion_aux = outputs.hear_aux.get("evasion", {}) if isinstance(outputs.hear_aux, dict) else {}
-                        p_evasion = evasion_aux.get("p_evasion", None)
-                        if p_evasion is not None:
-                            target = evasion_labels.float().view(-1, 1)
-                            loss_evasion = F.binary_cross_entropy(
-                                p_evasion.float().clamp(1e-6, 1.0 - 1e-6),
-                                target,
+                        aug_pixel_values = pixel_values.index_select(0, aug_indices) if pixel_values is not None else None
+                        aug_image_mask = image_mask.index_select(0, aug_indices) if image_mask is not None else None
+                        aug_input_values = input_values.index_select(0, aug_indices) if input_values is not None else None
+                        aug_audio_mask = audio_mask.index_select(0, aug_indices) if audio_mask is not None else None
+                        aug_outputs = forward_outputs(
+                            input_ids=aug_input_ids,
+                            attention_mask=aug_attention_mask,
+                            pixel_values=aug_pixel_values,
+                            image_mask=aug_image_mask,
+                            input_values=aug_input_values,
+                            audio_mask=aug_audio_mask,
+                        )
+                        aug_logits = aug_outputs.logits
+                        if float(args.evasion_aug_loss_weight) > 0.0:
+                            if loss_name == "focal":
+                                loss_aug = focal_loss(
+                                    aug_logits,
+                                    aug_labels,
+                                    class_weight=ce_weight,
+                                    alpha_non_toxic=focal_alpha_non_toxic,
+                                    alpha_toxic=focal_alpha_toxic,
+                                    gamma=focal_gamma,
+                                )
+                            else:
+                                loss_aug = F.cross_entropy(aug_logits, aug_labels, weight=ce_weight)
+                            loss = loss + float(args.evasion_aug_loss_weight) * loss_aug
+                        if float(args.evasion_consistency_weight) > 0.0:
+                            clean_logits = logits.index_select(0, aug_indices).detach()
+                            loss_cons = F.kl_div(
+                                F.log_softmax(aug_logits, dim=-1),
+                                F.softmax(clean_logits, dim=-1),
+                                reduction="batchmean",
                             )
-                            loss = loss + float(args.hear_evasion_loss_weight) * loss_evasion
+                            loss = loss + float(args.evasion_consistency_weight) * loss_cons
+                        if float(args.hear_evasion_loss_weight) > 0.0 and getattr(aug_outputs, "hear_aux", None) is not None:
+                            evasion_aux = aug_outputs.hear_aux.get("evasion", {}) if isinstance(aug_outputs.hear_aux, dict) else {}
+                            p_evasion = evasion_aux.get("p_evasion", None)
+                            if p_evasion is not None:
+                                target = torch.ones_like(p_evasion, dtype=torch.float32)
+                                loss_evasion = F.binary_cross_entropy(
+                                    p_evasion.float().clamp(1e-6, 1.0 - 1e-6),
+                                    target,
+                                )
+                                loss = loss + float(args.hear_evasion_loss_weight) * loss_evasion
                     loss = loss / max(args.grad_accum, 1)
 
                 with torch.no_grad():
